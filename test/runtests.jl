@@ -5,4 +5,5 @@ using TTNSolver
 
 @testset "TTNSolver" begin
     include("trees.jl")
+    include("states.jl")
 end
