@@ -64,11 +64,28 @@ at the root. It handles zero and rank-deficient states. Overcomplete local
 dimensions can shrink, but no tolerance-based rank truncation is performed.
 None of these operations normalizes the state or assumes a physical model.
 
+## Product-sum operators
+
+```julia
+term = ProductTerm(-im, Dict(1 => ComplexF64[0 1; 1 0]))
+generator = SumOfProducts(leafdims(state), [term])
+derivative = generator * state
+matrix_element = dot(state, generator, state)
+```
+
+Factor keys are **physical mode positions** in `leaf_order`, independent of
+tree node IDs. Missing factors mean identity; empty sums mean zero. All
+coefficients and matrices can be complex and non-Hermitian. `dense(generator)`
+acts on `vec(dense(state))`, with the first physical mode varying fastest.
+
+`apply` / `*` are exact block-sum reference actions: ranks may grow by the
+number of nonzero terms. They do not truncate or normalize. `dot(x, A, y)`
+contracts each product directly and avoids creating that expanded TTN.
+
 ## Next increments
 
-1. Product-sum operators and small dense HEOM comparisons.
-2. Augmented BUG and independently verified linear-invariant preservation.
-3. HEOM and TFD model layers in TTNDynamics, followed by measured optimization.
+1. Augmented BUG and independently verified linear-invariant preservation.
+2. HEOM and TFD propagation in TTNDynamics, followed by measured optimization.
 
 BUG, time propagation, truncation and TTNO construction are not implemented
 yet. The agreed package boundaries and first-increment design are in

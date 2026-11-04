@@ -23,10 +23,15 @@ physical leaf orders and dimensions must match; bond ranks may differ.
 """
 function LinearAlgebra.dot(x::TTNTensor, y::TTNTensor)
     _check_layout(x, y)
+    return _tree_dot(x, y, node -> x.leaves[node]' * y.leaves[node])
+end
+
+# The caller validates layouts and supplies leaf overlap/operator environments.
+function _tree_dot(x::TTNTensor, y::TTNTensor, leaf_environment)
     environments = Vector{Matrix{ComplexF64}}(undef, length(x.tree.children))
     for node in x.tree.postorder
         if _isleaf(x.tree, node)
-            environments[node] = x.leaves[node]' * y.leaves[node]
+            environments[node] = leaf_environment(node)
         else
             left, right = x.tree.children[node]
             projected = _child_product(y.cores[node], environments[left], 2)

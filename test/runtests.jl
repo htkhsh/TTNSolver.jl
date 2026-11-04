@@ -7,4 +7,5 @@ using TTNSolver
     include("trees.jl")
     include("states.jl")
     include("algebra.jl")
+    include("operators.jl")
 end
