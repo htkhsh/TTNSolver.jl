@@ -1,7 +1,8 @@
 # TTNSolver.jl
 
-Tree tensor foundations for Julia, intended to support BUG integration and
-HEOM / TFD models through a future companion package, `TTNDynamics.jl`.
+Tree tensor algebra for Julia. The companion package `TTNDynamics.jl` uses
+its product-sum operators for HEOM models. BUG integration and TFD models
+are planned subsequent increments.
 
 The first increment implements rooted binary trees, ComplexF64 TTN states,
 product states, dense reconstruction, contracted inner products and norms,
@@ -90,3 +91,5 @@ contracts each product directly and avoids creating that expanded TTN.
 BUG, time propagation, truncation and TTNO construction are not implemented
 yet. The agreed package boundaries and first-increment design are in
 [the design document](docs/superpowers/specs/2026-11-04-ttn-foundation-design.md).
+Operator and HEOM conventions are described in
+[the next-increment design](docs/superpowers/specs/2026-11-04-ttn-heom-operators-design.md).
