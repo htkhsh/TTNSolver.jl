@@ -39,8 +39,19 @@ function LinearAlgebra.dot(x::TTNTensor, y::TTNTensor)
     return environments[x.tree.root][1, 1]
 end
 
-"""Compute the Euclidean norm by tree contraction without dense expansion."""
-LinearAlgebra.norm(x::TTNTensor) = sqrt(max(0.0, real(dot(x, x))))
+"""
+    norm(x::TTNTensor)
+
+Compute the Euclidean norm from a root-orthogonalized copy, without dense
+expansion or mutation of `x`. QR avoids squaring the conditioning of subtree
+bases in `dot(x, x)`; the root uses LinearAlgebra's scaled array norm.
+"""
+function LinearAlgebra.norm(x::TTNTensor)
+    root = x.tree.root
+    _isleaf(x.tree, root) && return norm(x.leaves[root])
+    canonical = orthogonalize!(copy(x))
+    return norm(canonical.cores[root])
+end
 
 """
     orthogonalize!(state)

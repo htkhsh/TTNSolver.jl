@@ -12,6 +12,22 @@ function test_root_gauge(state)
 end
 
 @testset "TTN algebra" begin
+    @testset "Stable norm for cancellation and extreme amplitudes" begin
+        tree = balanced_tree(2)
+        x = TTNTensor(tree, Dict(1 => [1.0 1.0; 0.0 1e-8], 2 => ones(1, 1)),
+                      Dict(3 => reshape([1.0, -1.0], 1, 2, 1)))
+        before = copy(x)
+        @test norm(x) ≈ 1e-8 rtol=1e-14 atol=0
+        @test x.leaves == before.leaves
+        @test x.cores == before.cores
+        for amplitude in (1e200, 1e-200)
+            single = product_state(balanced_tree(1), [[amplitude]])
+            @test norm(single) ≈ amplitude rtol=1e-14 atol=0
+            two = product_state(tree, [[amplitude], [1.0]])
+            @test norm(two) ≈ amplitude rtol=1e-14 atol=0
+        end
+    end
+
     @testset "Conjugate inner products with unequal ranks" begin
         tree, leaves, cores, reference = three_leaf_fixture()
         x = TTNTensor(tree, leaves, cores)

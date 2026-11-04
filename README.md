@@ -55,6 +55,10 @@ small reference problems and can require exponential memory.
 but permits different bond ranks. It conjugates `x`. Inner products, norms
 and orthogonalization operate on the tree without dense expansion.
 
+`norm(state)` orthogonalizes an independent copy and applies the standard
+array norm to its root. This avoids the loss of small components from
+`sqrt(dot(state, state))` when bases nearly cancel, without mutating the state.
+
 `orthogonalize!` absorbs each QR factor into the parent, leaving the amplitude
 at the root. It handles zero and rank-deficient states. Overcomplete local
 dimensions can shrink, but no tolerance-based rank truncation is performed.

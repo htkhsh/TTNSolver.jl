@@ -61,7 +61,9 @@ not requirements to implement all at once.
   root rank one.
 - `dot(x, y)` contracts environments without dense expansion, conjugating the
   first argument. The two states must have the same ordered topology, physical
-  order and dimensions; bond ranks may differ. `norm(x)` is its Euclidean norm.
+  order and dimensions; bond ranks may differ. `norm(x)` is its Euclidean norm,
+  computed from a root-orthogonalized copy to avoid cancellation in Gram
+  matrices and unnecessary squaring of the amplitude range.
 - `orthogonalize!(state)` performs bottom-up thin QR and absorbs each R into
   the parent. Every non-root subtree basis becomes orthonormal; amplitude and
   phase remain at the root. It preserves the represented tensor up to roundoff
