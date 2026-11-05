@@ -59,6 +59,35 @@ function LinearAlgebra.norm(x::TTNTensor)
 end
 
 """
+    ttn_distance(x, y)
+
+Euclidean norm of x-y without global dense expansion or subtraction of
+squared norms. An exact block-sum difference is root-orthogonalized by QR.
+Bond ranks in this temporary tensor are at most the sum of the input ranks.
+Inputs are unchanged and must have the same ordered tree and physical sizes.
+"""
+function ttn_distance(x::TTNTensor, y::TTNTensor)
+    _check_layout(x, y)
+    tree = x.tree
+    _isleaf(tree, tree.root) && return norm(x.leaves[tree.root] - y.leaves[tree.root])
+    leaves = Dict(node => hcat(x.leaves[node], y.leaves[node]) for node in tree.leaf_order)
+    cores = Dict{Int,Array{ComplexF64,3}}()
+    for node in tree.postorder
+        _isleaf(tree, node) && continue
+        a, b = x.cores[node], y.cores[node]
+        pa, la, ra = size(a)
+        pb, lb, rb = size(b)
+        isroot = node == tree.root
+        core = zeros(ComplexF64, isroot ? 1 : pa+pb, la+lb, ra+rb)
+        core[1:pa, 1:la, 1:ra] .= a
+        core[isroot ? (1:1) : (pa+1:pa+pb), la+1:la+lb, ra+1:ra+rb] .= isroot ? -b : b
+        cores[node] = core
+    end
+    difference = orthogonalize!(TTNTensor(tree, leaves, cores))
+    return norm(difference.cores[tree.root])
+end
+
+"""
     orthogonalize!(state)
 
 Move the orthogonality center to the root by bottom-up thin QR. Every
