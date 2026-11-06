@@ -56,25 +56,40 @@ function _mixed_subtree_operators(bra, core, left, right; orthonormal=false)
     isempty(left) && return Matrix{ComplexF64}[]
     p,l,r = size(core)
     a,b = size(first(left),1),size(first(right),1)
-    # The input core is fixed throughout this batch. Fold it once, then reuse
-    # every large intermediate for the distinct factor pairs at this node.
+    # The input core is fixed throughout this batch; reuse the intermediates
+    # for the distinct factor pairs at this node. Child modes are contracted
+    # in place of permutations: L per right-index slice, R on a (p*a,r) view.
     # Only the small environment result returned from each call is retained.
-    left_in = reshape(permutedims(core,(2,1,3)),l,:)
-    left_out = Array{ComplexF64}(undef,a,p,r)
-    right_in = Array{ComplexF64}(undef,r,p,a)
-    right_out = Array{ComplexF64}(undef,b,p,a)
-    projected = Array{ComplexF64}(undef,a,b,p)
-    lm,ri,ro = reshape(left_out,a,:),reshape(right_in,r,:),reshape(right_out,b,:)
-    basis = reshape(projected,a*b,p)
+    left_out = Array{ComplexF64}(undef,p,a,r)
+    right_out = Array{ComplexF64}(undef,p,a,b)
+    right_mat = reshape(right_out,p*a,b)
+    slices = _slice_mode2(p,l)
+    # Small parent dimensions: permute the fixed core once for all pairs.
+    left_in = slices ? nothing : reshape(permutedims(core,(2,1,3)),l,p*r)
+    left_tmp = slices ? nothing : Array{ComplexF64}(undef,a,p,r)
     return _map_unique_pairs(left, right) do L,R
         if orthonormal && isone(L) && isone(R)
             return Matrix{ComplexF64}(I,p,p)
         end
-        isone(L) ? copyto!(lm,left_in) : mul!(lm,L,left_in)
-        permutedims!(right_in,left_out,(3,2,1))
-        isone(R) ? copyto!(ro,ri) : mul!(ro,R,ri)
-        permutedims!(projected,right_out,(3,1,2))
-        bra' * basis
+        source = core
+        if !isone(L)
+            if slices
+                Lt = transpose(L)
+                for k in 1:r
+                    mul!(view(left_out,:,:,k),view(core,:,:,k),Lt)
+                end
+            else
+                mul!(reshape(left_tmp,a,p*r),L,left_in)
+                permutedims!(left_out,left_tmp,(2,1,3))
+            end
+            source = left_out
+        end
+        if !isone(R)
+            mul!(right_mat,reshape(source,p*a,r),transpose(R))
+            source = right_out
+        end
+        # bra' * basis(projected), with basis = transpose(reshape(projected,p,:)).
+        bra' * transpose(reshape(source,p,a*b))
     end
 end
 

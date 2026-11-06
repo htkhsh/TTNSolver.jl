@@ -49,9 +49,13 @@ function _tamen_initial_guess(initial,grid,hint)
         return _tamen_cold_guess(initial,nt,:layout_mismatch)
     end
     endpoint = time_slice(old,length(old.nodes))
-    scale = max(norm(endpoint),norm(initial))
-    ttn_distance(endpoint,initial) <= 128eps(Float64)*scale ||
-        return _tamen_cold_guess(initial,nt,:initial_mismatch)
+    # A chained solve passes the returned endpoint itself; identical arrays need
+    # no distance. Anything else gets the exact block-sum distance check.
+    if !_same_tensors(endpoint,initial)
+        scale = max(norm(endpoint),norm(initial))
+        ttn_distance(endpoint,initial) <= 128eps(Float64)*scale ||
+            return _tamen_cold_guess(initial,nt,:initial_mismatch)
+    end
     ratio = last(grid.nodes)/last(old.nodes)
     isfinite(ratio) || return _tamen_cold_guess(initial,nt,:duration_ratio)
     start = _tamen_spatial_projection(old,old.initial)
@@ -80,4 +84,13 @@ function _tamen_initial_guess(initial,grid,hint)
     compatible_residual = grid.scheme==old.time_scheme && length(old.nodes)==length(grid.nodes)
     residual = compatible_residual && !isnothing(hint.residual) ? copy(hint.residual) : nothing
     return x,residual,:used
+end
+
+# Exact equality of layout and every stored array (no tolerance).
+function _same_tensors(x::TTNTensor,y::TTNTensor)
+    x.tree.root == y.tree.root && x.tree.children == y.tree.children &&
+        x.tree.leaf_order == y.tree.leaf_order || return false
+    keys(x.leaves) == keys(y.leaves) && keys(x.cores) == keys(y.cores) || return false
+    return all(k->x.leaves[k] == y.leaves[k],keys(x.leaves)) &&
+           all(k->x.cores[k] == y.cores[k],keys(x.cores))
 end

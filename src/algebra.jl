@@ -1,5 +1,21 @@
 # Multiply either child mode by a matrix with shape (new_rank, old_rank).
+# Mode-2 products use one GEMM per right-index slice unless the parent
+# dimension is small, where one permuted GEMM is faster (measured crossover).
+_slice_mode2(p, l) = 3p >= l
+
+# Mode 3 is one GEMM on a (parent*left, right) view, without permutations.
 function _child_product(core::Array{ComplexF64,3}, matrix::AbstractMatrix, mode::Int)
+    p, l, r = size(core)
+    if mode == 3
+        return reshape(reshape(core, p*l, r) * transpose(matrix), p, l, size(matrix, 1))
+    elseif mode == 2 && _slice_mode2(p, l)
+        result = Array{ComplexF64}(undef, p, size(matrix, 1), r)
+        Mt = transpose(matrix)
+        for k in 1:r
+            mul!(view(result, :, :, k), view(core, :, :, k), Mt)
+        end
+        return result
+    end
     permutation = mode == 2 ? (2, 1, 3) : (3, 1, 2)
     unfolded = permutedims(core, permutation)
     dimensions = size(unfolded)

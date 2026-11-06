@@ -56,10 +56,41 @@ inconsistent hashes for this reason and is quarantined.
 
 Details: `TTNDynamics/docs/holstein_tt_acceptance.md`.
 
-## Next
+## Follow-up: improvement candidates (committed after 8b5350e)
 
-Remaining cost at 5 fs: local GMRES (~59%), GC (~30%, 2.46 GB per interval),
-environments (~16%). Candidates, in order:
-1. Fewer allocations in local actions.
-2. Skipping solves at full-rank leaves.
-3. A local preconditioner or better initial guesses.
+Measured on a fixed input: the saved 4.5 fs state and hint, timing the
+4.5→5 fs interval. This was then confirmed by interleaved 5 fs trajectories
+against a worktree of the committed HEAD.
+
+- [x] 7. Warm-start initial guess: an exact array-equality fast path
+  (`_same_tensors`) before the block-sum `ttn_distance`/norm check. A chained
+  solve passes the returned endpoint itself, so this skipped about a third of
+  all allocation. Other inputs (for example a regauged endpoint) still take
+  the exact check, which a test covers.
+- [x] 8. Local GMRES: use `report.normres` instead of recomputing
+  `norm(rhs-A*x)`. KrylovKit's GMRES recomputes the explicit residual before it
+  reports convergence (a contract test is added). Matvecs per interval fell
+  from 560 to 426 with an identical iterate.
+- [x] 9. Skip solves at leaves whose basis is square (rank equals physical
+  dimension). The parent re-solve covers the same Galerkin space. The endpoint
+  is unchanged; there were 25 fewer solves, but they were nearly free.
+- [x] 10. Child-mode contractions without permutations in `_child_product`, the
+  local core action and `_mixed_subtree_operators`. Mode 3 is one GEMM on a
+  reshaped view. Mode 2 uses one GEMM per slice when `3p >= l`, and otherwise
+  permutes once (measured crossover). Allocation per 5 fs trajectory fell
+  from 7.66 to 4.86 GB, and the trajectory got about 1.14x faster.
+- [x] 11. Rejected: skipping Etter pre-descent solves at internal nodes. It
+  needed 3 sweeps instead of 2, raised matvecs from 401 to 565, and was slower
+  (3.7 s vs 2.4 s per interval).
+- [ ] 12. Not done: preconditioning. Solves average about 1.7 Krylov steps.
+  The fixed per-solve operator applications (initial residual, Arnoldi start,
+  KrylovKit's explicit final residual) dominate. A custom GMRES trusting the
+  recurrence residual would save one application per solve (about 27%), but it
+  gives up the explicit local residual.
+
+Interleaved 5 fs trajectories, two rounds of two each (same error 6.659e-4):
+- committed HEAD: about 9.3 s, 8.8 GB;
+- items 7–9 only: about 8.3 s, 7.66 GB;
+- items 7–10: about 7.3 s, 4.86 GB.
+
+Tests: TTNSolver 2845, TTNDynamics 595, benchmark verify 16.

@@ -22,6 +22,8 @@ function Base.showerror(io::IO,e::TAMEnConvergenceError)
     print(io,"; inspect exception.diagnostics for details")
 end
 
+_full_leaf_basis(U) = size(U,1) == size(U,2)
+
 # Move the orthogonality center across one edge. These exact gauge moves also
 # shrink locally overcomplete bonds, but perform no tolerance-based truncation.
 function _tamen_down!(x,parent,child,mode)
@@ -88,9 +90,9 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         local_solves += 1
         matvecs += report.numops
         iterations += report.numiter
-        # Check the actual local residual as well as the Krylov flag.
-        error = norm(rhs-action(result))
-        matvecs += 1
+        # KrylovKit's GMRES recomputes r=b-A*x explicitly before reporting
+        # convergence, so normres is the actual local residual of `result`.
+        error = report.normres
         max_residual = max(max_residual,error)
         if report.converged != 1 || !isfinite(error) || !all(isfinite,result)
             throw(TAMEnConvergenceError(:local_gmres,
@@ -103,7 +105,9 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         end
     end
     function visit!(node)
-        solve!(node)
+        # A leaf basis spanning its whole space needs no solve: the parent is
+        # solved again afterwards in the same Galerkin space.
+        _isleaf(tree,node) && _full_leaf_basis(x.leaves[node]) || solve!(node)
         (_isleaf(tree,node) || root_only) && return
         left,right = tree.children[node]
         for (child,sibling,mode) in ((left,right,2),(right,left,3))

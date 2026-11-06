@@ -84,45 +84,45 @@ _core_rhs_workspace(operator, boundary, left, right, initial; buffers=nothing) =
 
 function _core_terms_workspace(terms, initial; buffers=nothing)
     identities = [isone.(t.factors) for t in terms]
+    transposed = [(transpose(t.factors[2]),transpose(t.factors[3])) for t in terms]
     p,l,r = size(initial)
     if isnothing(buffers)
-        left_input = Array{ComplexF64}(undef,l,p,r)
-        left_output = similar(left_input)
-        right_input = Array{ComplexF64}(undef,r,p,l)
-        right_output = similar(right_input)
-        projected_right = similar(initial)
-        acted = similar(initial)
+        left_out,right_out,acted = similar(initial),similar(initial),similar(initial)
+        x_perm,left_tmp = Array{ComplexF64}(undef,l,p,r),Array{ComplexF64}(undef,l,p,r)
     else
-        left_input,left_output,right_input,right_output,projected_right,acted = buffers
+        # Historical six-slot layout; all slots hold p*l*r elements.
+        left_out = reshape(buffers[1],p,l,r)
+        x_perm,left_tmp = reshape(buffers[2],l,p,r),reshape(buffers[3],l,p,r)
+        right_out,acted = buffers[5],buffers[6]
     end
-    # Cache matrix views too; their array storage is shared with the tensors.
-    left_in,left_out = reshape(left_input,l,:),reshape(left_output,l,:)
-    right_in,right_out = reshape(right_input,r,:),reshape(right_output,r,:)
-    parent_in,parent_out = reshape(projected_right,p,:),reshape(acted,p,:)
+    right_mat,acted_mat = reshape(right_out,p*l,r),reshape(acted,p,l*r)
+    slices = _slice_mode2(p,l)
+    has_left = any(ids->!ids[2],identities)
+    # Child factors act on x directly: the right factor on a (p*l,r) view, the
+    # boundary on (p,l*r), and the left factor per right-index slice (or, for
+    # small p, on x permuted once per action).
     function action(x)
         result = zeros(ComplexF64,size(x))
-        permutedims!(left_input,x,(2,1,3))
-        for (term,(bi,li,ri)) in zip(terms,identities)
-            B,L,R = term.factors
-            if li && ri
-                source = x
-            else
-                if li
-                    permutedims!(right_input,x,(3,1,2))
+        !slices && has_left && permutedims!(x_perm,x,(2,1,3))
+        for (term,(bi,li,ri),(Lt,Rt)) in zip(terms,identities,transposed)
+            source = x
+            if !li
+                if slices
+                    for k in 1:r
+                        mul!(view(left_out,:,:,k),view(source,:,:,k),Lt)
+                    end
                 else
-                    mul!(left_out,L,left_in)
-                    permutedims!(right_input,left_output,(3,2,1))
+                    mul!(reshape(left_tmp,l,p*r),term.factors[2],reshape(x_perm,l,p*r))
+                    permutedims!(left_out,left_tmp,(2,1,3))
                 end
-                if ri
-                    permutedims!(projected_right,right_input,(2,3,1))
-                else
-                    mul!(right_out,R,right_in)
-                    permutedims!(projected_right,right_output,(2,3,1))
-                end
-                source = projected_right
+                source = left_out
+            end
+            if !ri
+                mul!(right_mat,reshape(source,p*l,r),Rt)
+                source = right_out
             end
             if !bi
-                mul!(parent_out,B,reshape(source,p,:))
+                mul!(acted_mat,term.factors[1],reshape(source,p,l*r))
                 source = acted
             end
             result .+= term.coefficient .* source

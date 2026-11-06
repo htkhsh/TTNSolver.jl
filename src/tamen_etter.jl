@@ -96,9 +96,11 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
         alg = KrylovKit.GMRES(;tol,krylovdim=min(krylovdim,length(initial)),maxiter=krylov_maxiter)
         result,report = KrylovKit.linsolve(action,rhs,initial,alg)
         solves[node] += 1
-        matvecs[node] += report.numops+1
+        matvecs[node] += report.numops
         iterations[node] += report.numiter
-        error = norm(rhs-action(result))
+        # KrylovKit's GMRES recomputes r=b-A*x explicitly before reporting
+        # convergence, so normres is the actual local residual of `result`.
+        error = report.normres
         residuals[node] = max(residuals[node],error)
         if report.converged != 1 || !isfinite(error) || !all(isfinite,result)
             throw(TAMEnConvergenceError(:local_gmres,(;node,residual=error,
@@ -132,7 +134,8 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
         return nothing
     end
     function visit!(node,budget)
-        solve!(node)
+        # Full-rank leaves are skipped; the parent re-solve covers their space.
+        _isleaf(tree,node) && _full_leaf_basis(leaves[node]) || solve!(node)
         if !_isleaf(tree,node)
             left,right = tree.children[node]
             entry = cores[node]

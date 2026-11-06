@@ -385,6 +385,14 @@ recursively adding Gram matrices of mutually orthogonal components. It does
 not subtract squared norms, and it falls back to `ttn_distance` if a spatial
 basis is not orthonormal.
 
+Local solves at leaves whose basis is square (rank equal to physical
+dimension) are skipped: the parent re-solve spans the same space. The local
+GMRES residual is KrylovKit's explicitly recomputed `normres`, so no extra
+operator application is spent on checking it. A chained warm start whose
+initial state is the stored endpoint (identical arrays) skips the distance
+check, and other inputs still get the exact check. Child-mode contractions
+avoid tensor permutations except for mode 2 with a small parent dimension.
+
 Tests compare every edge operator `Σ D⊗U` and every local action against
 the SoP path. The test operators include three-body, scalar and zero
 coefficient terms, on irregular trees. Solutions, time errors and invariant

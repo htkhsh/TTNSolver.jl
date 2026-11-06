@@ -158,11 +158,40 @@ tt_error(y,exact) = norm(vec(dense(y))-exact)/norm(exact)
         @test !isnothing(i1.warm_start)
         y2,i2 = tamen_step(y1,op,0.25;common...,options...,warm_start=i1.warm_start)
         @test i2.warm_start_used && i2.converged && !i2.certified
+        # A different gauge of the same endpoint takes the exact distance path.
+        regauged = copy(y1)
+        leaf = first(regauged.tree.leaf_order)
+        Q = Matrix(qr(randn(MersenneTwister(4),ComplexF64,size(regauged.leaves[leaf],2),size(regauged.leaves[leaf],2))).Q)
+        parent = regauged.tree.parent[leaf]
+        mode = regauged.tree.children[parent][1] == leaf ? 2 : 3
+        regauged.leaves[leaf] = regauged.leaves[leaf]*Q
+        regauged.cores[parent] = TTNSolver._child_product(regauged.cores[parent],Q',mode)
+        @test !TTNSolver._same_tensors(regauged,y1)
+        @test norm(vec(dense(regauged))-vec(dense(y1))) < 1e-12
+        _,i3 = tamen_step(regauged,op,0.25;common...,options...,warm_start=i1.warm_start)
+        @test i3.warm_start_status == :used
+        @test TTNSolver._same_tensors(y1,copy(y1))
         @test tt_error(y2,exact) < 1e-6
         result = tamen_evolve(x,op,(0.0,h);dt=0.25,saveat=[0.0,h],rtol=1e-6,atol=1e-9,
             solve_rtol=1e-9,maxrank=9,kickrank=2,options...)
         @test result.accepted >= 2
         @test all(d->!d.accepted || (d.solve.converged && !d.solve.certified),result.diagnostics)
         @test tt_error(result.final_state,exact) < 1e-5
+    end
+end
+
+@testset "KrylovKit GMRES reports the explicit residual" begin
+    # tAMEn relies on normres being norm(b-A*x) for the returned x.
+    rng = MersenneTwister(19)
+    for n in (6,40)
+        A = I + (0.3/sqrt(n))*randn(rng,ComplexF64,n,n)   # well conditioned
+        b = randn(rng,ComplexF64,n)
+        for tol in (1e-3,1e-10)
+            x,info = TTNSolver.KrylovKit.linsolve(v->A*v,b,zeros(ComplexF64,n),
+                TTNSolver.KrylovKit.GMRES(;tol,krylovdim=min(n,8),maxiter=50))
+            @test info.converged == 1
+            @test info.normres ≈ norm(b-A*x) rtol=1e-6 atol=1e-14
+            @test info.normres <= tol
+        end
     end
 end
