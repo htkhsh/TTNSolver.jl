@@ -96,6 +96,11 @@ QR complements and frozen sibling bases for its reduced equations. It augments
 old and evolved bases, then integrates cores in expanded child spaces. Full
 physical leaf spaces skip their K solve. Inputs remain unchanged; no dense
 hierarchy, global generator matrix or rank-expanded derivative is built.
+`threaded=true` (default) runs sibling subtrees concurrently when Julia has
+multiple worker threads; parents wait for their children. Set `threaded=false`
+for sequential execution of the same formula. Preparation and final truncation
+are serial. Fixed and adaptive stepping both honor this option; see
+[augmented threading](augmented_threads.md).
 
 Local solves use non-Hermitian Arnoldi exponential actions. `krylov_tol` is
 relative to the local initial norm, per unit time; temporary scaling restores
@@ -110,6 +115,14 @@ truncation. The caller must supply a genuine invariant. Set
 the uncorrected value and correction norm. States are not normalized.
 
 `truncate!(state; atol, maxrank, conserved)` is also available independently.
+Its default `weighting=:weighted` carries complementary amplitudes downward
+with thin QR before selecting each SVD space. This weights cuts by their
+contribution to the full state, retaining the same protected directions and
+an additive absolute error bound. `weighting=:local` restores conservative
+local-core compression. `augmented_bug_step`, `parallel_bug_step`, and
+`adaptive_evolve` also default to `truncation=:weighted`; pass
+`truncation=:local` to use the previous policy throughout the solve.
+See the [Holstein comparison](../../TTNDynamics/docs/weighted_tree.md).
 Protected subtree spaces must already be present. The method reports a
 conservative `discarded_bound`. A binding `maxrank` may miss the requested
 tolerance (`tolerance_met=false`); protected directions cannot be discarded
@@ -122,6 +135,22 @@ state, `enrich_basis(state, generator*state)` can seed directions invisible to
 the reduced BUG equations. The exact operator action may temporarily multiply
 ranks by its term count. Keep added zero-weight directions through the first
 step. This bootstrap does not detect every later missing direction.
+
+### Shared BUG contraction kernels
+
+Both BUG variants combine local product terms when two of the three factors
+are exactly equal. Coefficients are absorbed into the remaining factor;
+there is no equality tolerance or additional rank approximation. Parallel
+BUG uses the same grouping for its rectangular cross blocks. Floating-point
+summation order can change, so results need not be bitwise identical.
+
+Upward, complementary and mixed environments reuse contractions with equal
+input factors within each node invocation. These environment entries are
+read-only and may share storage. Caches never persist across changed states
+or operators. Large contraction buffers belong to the invocation; local
+Arnoldi action outputs and distinct environment results own their storage.
+The implementation does not change time steps, truncation settings or the
+conserved subspaces.
 
 ## Adaptive integration
 
@@ -196,6 +225,9 @@ The [preparation comparison](../../TTNDynamics/docs/bug_preparation.md) measures
 the optimization against the previous implementation in the same process.
 
 ## Related code and papers
+
+The selectable [parallel BUG method](parallel_bug.md) documents its update,
+threading, invariant protection, diagnostic limits, and primary references.
 
 - [TTNDynamics.jl](../../TTNDynamics/README.md) provides HEOM and TFD models.
   See the [HEOM adapter](../../TTNDynamics/src/heom.jl),

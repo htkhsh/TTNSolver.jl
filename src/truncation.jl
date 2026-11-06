@@ -4,26 +4,44 @@ function _compression_options(atol, maxrank)
     maxrank isa Integer && maxrank >= 1 || throw(ArgumentError("maxrank must be a positive integer"))
 end
 
+function _check_truncation_weighting(weighting)
+    weighting isa Symbol && weighting in (:local,:weighted) ||
+        throw(ArgumentError("truncation weighting must be :local or :weighted"))
+end
+
 # Twice-reorthogonalized columns; prioritize protected and old directions by
 # passing them first. Each column has its own scale, so tiny physical amplitudes
 # do not erase the old normalized basis during augmentation.
 function _orth_columns(arrays::AbstractMatrix...)
     n = size(first(arrays), 1)
-    Q = zeros(ComplexF64, n, 0)
+    all(A->size(A,1)==n,arrays) || throw(DimensionMismatch("basis row counts differ"))
+    capacity = min(n,sum(A->size(A,2),arrays))
+    Q = Matrix{ComplexF64}(undef,n,capacity)
+    v = Vector{ComplexF64}(undef,n)
+    projected = similar(v)
+    coefficients = Vector{ComplexF64}(undef,capacity)
+    count = 0
     for A in arrays, j in axes(A, 2)
-        size(Q, 2) == n && return Q
-        v = ComplexF64.(A[:, j])
+        count == n && break
+        copyto!(v,view(A,:,j))
         scale = norm(v)
         iszero(scale) && continue
         v ./= scale
         for _ in 1:2
-            v .-= Q * (Q' * v)
+            if count > 0
+                active=view(Q,:,1:count)
+                weights=view(coefficients,1:count)
+                mul!(weights,active',v)
+                mul!(projected,active,weights)
+                v .-= projected
+            end
         end
         s = norm(v)
         s > 64eps(Float64) || continue
-        Q = hcat(Q, v / s)
+        count += 1
+        view(Q,:,count) .= v ./ s
     end
-    return Q
+    return Q[:,1:count]
 end
 
 function _subtree_overlaps(x, c)
@@ -73,21 +91,26 @@ function _retained_space(M, protected, budget, maxrank)
 end
 
 """
-    truncate!(state; atol=1e-10, maxrank=typemax(Int), conserved=nothing)
+    truncate!(state; atol=1e-10, maxrank=typemax(Int), conserved=nothing,
+              weighting=:weighted)
 
 Root-to-leaf SVD compression, protecting all subtree directions of an optional
 TTN linear functional. Its subtree spaces must already be contained in state
 (augmented_bug_step arranges this). No normalization is performed.
 
-The absolute error budget is shared over edges, with the original root norm
-as a conservative amplification bound for local errors. `discarded_bound`
-is the sum of these weighted local errors; roundoff is not included. A rank
+The absolute error budget is shared over edges. The default `weighting=:weighted`
+propagates complementary amplitudes by thin QR and uses their full-state
+weights in each SVD. `:local` uses the original root norm as a conservative
+amplification bound for local core errors. Both return `discarded_bound` as a sum
+of error bounds; roundoff is not included. A rank
 cap can exceed the budget, reported by `tolerance_met=false`, but cannot
 discard a protected direction. Leaves/cores are root-orthogonal on return.
 Invalid options or incompatible protected spaces leave the input unchanged.
 """
-function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved=nothing)
+function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved=nothing,
+                   weighting=:weighted)
     _compression_options(atol, maxrank)
+    _check_truncation_weighting(weighting)
     c = _canonical_conserved(state, conserved)
     x = orthogonalize!(copy(state))
     tree = x.tree
@@ -101,7 +124,10 @@ function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved
             size(Z, 2) <= maxrank || throw(ArgumentError("maxrank cannot hold the conserved directions"))
         end
     end
-    scale = max(1.0, norm(x))
+    weighted = weighting == :weighted
+    scale = weighted ? 1.0 : max(1.0, norm(x))
+    factors = weighted ? Vector{Matrix{ComplexF64}}(undef,length(tree.children)) : nothing
+    weighted && (factors[tree.root] = ones(ComplexF64,1,1))
     edges = length(tree.children)-1
     budget = Float64(atol) / max(1, edges) / scale
     discarded_bound = 0.0
@@ -111,10 +137,22 @@ function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved
         _isleaf(tree, node) && continue
         for (child, mode) in zip(tree.children[node], (2, 3))
             C = x.cores[node]
-            M = Matrix(transpose(_complement_matrix(C, mode)))
+            if weighted
+                # Complementary bases are orthonormal before cuts in other
+                # branches. Later orthogonal projections there can only
+                # decrease these tail norms, so cached factors remain bounds.
+                amplitude = _parent_product(C,factors[node])
+                R = Matrix(qr(_complement_matrix(amplitude,mode)).R)
+                M = Matrix(transpose(R))
+            else
+                M = Matrix(transpose(_complement_matrix(C, mode)))
+            end
             P = isnothing(c) ? zeros(ComplexF64, size(M, 1), 0) : overlaps[child]
             W, dropped = _retained_space(M, P, budget, maxrank)
             discarded_bound += scale * dropped
+            # Coefficients transform by W', hence the transposed outside
+            # factor transforms by conj(W), not W or W'.
+            weighted && (factors[child] = R * conj.(W))
             x.cores[node] = _child_product(C, W', mode)
             if _isleaf(tree, child)
                 x.leaves[child] = x.leaves[child] * W

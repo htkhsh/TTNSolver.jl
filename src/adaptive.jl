@@ -52,30 +52,34 @@ end
 
 # Reject immediately if any branch's reference is insufficiently resolved.
 # Only LocalSolveFailure is recoverable; programming/argument errors propagate.
-function _adaptive_trial(state, operator, h1, h2, budget, options, timer=nothing)
+function _adaptive_trial(state, operator, h1, h2, budget, options, timer=nothing;
+                         method=:augmented, threaded=true)
     coarse, half1, half2 = nothing, nothing, nothing
     stage = :coarse
     finish(candidate, reason, failure=nothing) =
         (; candidate, reason, stage, local_failure=failure, coarse, half1, half2)
     try
+        prepare = method == :parallel ? _prepare_parallel_bug_step : _prepare_bug_step
+        prepared_step = method == :parallel ? _prepared_parallel_bug_step : _prepared_bug_step
+        step = method == :parallel ? parallel_bug_step : augmented_bug_step
+        execution = (;threaded)
+        step_options = merge(Base.structdiff(options,(;conserved=options.conserved)),execution)
         # These two branches have the same old state. Charge preparation once
         # to the coarse solve; the second half must prepare its changed input.
         full, coarse, prepared = _measure_adaptive(timer,Val(:coarse_bug)) do
-            prepared = _prepare_bug_step(state,operator,options.conserved,options.maxrank)
-            step_options = Base.structdiff(options,(;conserved=options.conserved))
-            full,info = _prepared_bug_step(prepared,operator,h1+h2;atol=budget,step_options...)
+            prepared = prepare(state,operator,options.conserved,options.maxrank)
+            full,info = prepared_step(prepared,operator,h1+h2;atol=budget,step_options...)
             (full,info,prepared)
         end
         coarse.truncation.tolerance_met || return finish(nothing, :truncation)
         stage = :half1
         middle, half1 = _measure_adaptive(timer,Val(:fine_bug)) do
-            step_options = Base.structdiff(options,(;conserved=options.conserved))
-            _prepared_bug_step(prepared,operator,h1;atol=budget/2,step_options...)
+            prepared_step(prepared,operator,h1;atol=budget/2,step_options...)
         end
         half1.truncation.tolerance_met || return finish(nothing, :truncation)
         stage = :half2
         fine, half2 = _measure_adaptive(timer,Val(:fine_bug)) do
-            augmented_bug_step(middle, operator, h2; atol=budget/2, options...)
+            step(middle, operator, h2; atol=budget/2, options..., execution...)
         end
         half2.truncation.tolerance_met || return finish(nothing, :truncation)
         stage = :complete
@@ -94,9 +98,16 @@ end
         atol=1e-6, rtol=1e-4, truncation_fraction=0.1, dtmin=0, dtmax=Inf,
         maxsteps=100000, maxreject=20, observe=copy, maxrank=typemax(Int),
         conserved=nothing, krylov_tol=1e-12, krylovdim=30, krylov_maxiter=100,
-        correct_invariant=true, record_timing=false)
+        correct_invariant=true, record_timing=false, method=:augmented, threaded=true,
+        truncation=:weighted)
 
-Adaptive first-order augmented BUG for an autonomous linear generator. Compare
+Adaptive first-order BUG for an autonomous linear generator. Select
+`method=:augmented` (default) or `:parallel`. `threaded` controls concurrent
+subtree updates for augmented BUG and all-node solves for parallel BUG.
+`truncation=:weighted` uses amplitude-weighted compression by default;
+`:local` selects conservative local-core compression for all three trial steps.
+This controller uses step doubling, not
+the parallel paper's optional rank-expansion retry strategy. Compare
 one full step with two half steps and accept the two-half-step result. Error
 estimates use the whole TTN and include coarse truncation/correction norms plus
 twice those of the fine branch for equal halves. For representably unequal
@@ -148,7 +159,11 @@ function adaptive_evolve(initial::TTNTensor, operator::SumOfProducts, tspan;
                          maxsteps=100000, maxreject=20, observe=copy,
                          maxrank=typemax(Int), conserved=nothing,
                          krylov_tol=1e-12, krylovdim=30, krylov_maxiter=100,
-                         correct_invariant::Bool=true, record_timing::Bool=false)
+                         correct_invariant::Bool=true, record_timing::Bool=false,
+                         method=:augmented, threaded::Bool=true,truncation=:weighted)
+    method === :augmented || method === :parallel ||
+        throw(ArgumentError("method must be :augmented or :parallel"))
+    _check_truncation_weighting(truncation)
     started = record_timing ? time_ns() : UInt64(0)
     observations_timer = record_timing ? _AdaptiveTimings() : nothing
     grid = _save_grid(tspan, saveat)
@@ -174,7 +189,7 @@ function adaptive_evolve(initial::TTNTensor, operator::SumOfProducts, tspan;
         all(node -> node == c.tree.root || ranks[node] <= maxrank, c.tree.postorder) ||
             throw(ArgumentError("maxrank cannot hold the conserved directions"))
     end
-    options = (; maxrank, conserved=c, krylov_tol, krylovdim, krylov_maxiter, correct_invariant)
+    options = (; maxrank, conserved=c, krylov_tol, krylovdim, krylov_maxiter, correct_invariant,truncation)
     state = copy(initial)
     state_norm = norm(state)
     isfinite(state_norm) || throw(ArgumentError("initial state norm must be finite"))
@@ -214,7 +229,8 @@ function adaptive_evolve(initial::TTNTensor, operator::SumOfProducts, tspan;
             isfinite(tolerance) || throw(ArgumentError("error tolerance overflowed; rescale tolerances/state"))
             budget = fraction*tolerance
             timer = record_timing ? _AdaptiveTimings() : nothing
-            trial = _adaptive_trial(state, operator, middle-time, target-middle, budget, options, timer)
+            trial = _adaptive_trial(state, operator, middle-time, target-middle, budget, options, timer;
+                                    method,threaded)
             reason = trial.reason
             difference = error_estimate = error_ratio = Inf
             truncation_error = correction_error = 0.0

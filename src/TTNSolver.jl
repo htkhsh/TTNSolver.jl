@@ -9,7 +9,7 @@ export orthogonalize!, ttn_distance, enrich_basis
 export ProductTerm, SumOfProducts, apply
 export OperatorEnvironments, operator_environments, local_apply
 export truncate!
-export augmented_bug_step, LocalSolveFailure
+export augmented_bug_step, parallel_bug_step, LocalSolveFailure
 export adaptive_evolve, AdaptiveIntegrationError
 
 include("trees.jl")
@@ -21,6 +21,8 @@ include("truncation.jl")
 include("enrichment.jl")
 include("bug_workspaces.jl")
 include("bug.jl")
+include("parallel_workspaces.jl")
+include("parallel_bug.jl")
 include("timing.jl")
 include("adaptive.jl")
 

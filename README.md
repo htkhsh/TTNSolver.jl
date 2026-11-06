@@ -8,17 +8,25 @@ julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=. examples/basic_ttn.jl
 ```
 
-## Time-evolution algorithm
+## Time-evolution algorithms
 
 The first-order recursive augmented BUG integrator updates subtree bases from
 leaves to root, evolves in the Galerkin spaces augmented by old and updated
 bases, and truncates the resulting ranks. Local
-exponential actions use Arnoldi.
+exponential actions use Arnoldi. `threaded=true` (default) updates sibling
+subtrees concurrently, with parents waiting for their updated child bases.
+See [threading](docs/augmented_threads.md) for execution details.
+
+The first-order **parallel BUG** integrator [3] solves all node equations in
+the old bases, then assembles and truncates the updated TTN.
+Use `parallel_bug_step(...; threaded=true)` to run node solves concurrently.
+See [parallel BUG](docs/parallel_bug.md) for options and limitations.
 
 The standard workflow uses fixed time steps via `augmented_bug_step`, with
 `h` and `h/2` convergence checks. Tensor ranks remain adaptive.
 
-Optional `adaptive_evolve` step-size control compares one full step with two
+Optional `adaptive_evolve(...; method=:augmented)` step-size control supports
+either algorithm (`:parallel` selects parallel BUG). It compares one full step with two
 half steps and accepts the two-half-step result when the estimated whole-TTN
 error meets the tolerance. Otherwise it rejects the attempt and retries with a changed step
 size. The estimate accounts for truncation and invariant-correction errors;
@@ -40,3 +48,7 @@ truncation controls, solver options, limitations, and related code references.
    Equations I: Nonstiff Problems*, 2nd revised ed. (1993),
    [doi:10.1007/978-3-540-78862-1](https://doi.org/10.1007/978-3-540-78862-1),
    for general local-error and adaptive step-size methods.
+3. G. Ceruti, J. Kusch, C. Lubich and D. Sulz, “A Parallel Basis Update and
+   Galerkin Integrator for Tree Tensor Networks,” *SIAM Journal on Scientific
+   Computing* **48**(1), A27–A48 (2026),
+   [doi:10.1137/24M1714502](https://doi.org/10.1137/24M1714502).
