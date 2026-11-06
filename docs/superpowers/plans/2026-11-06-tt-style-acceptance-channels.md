@@ -85,8 +85,13 @@ against a worktree of the committed HEAD.
 - [ ] 12. Not done: preconditioning. Solves average about 1.7 Krylov steps.
   The fixed per-solve operator applications (initial residual, Arnoldi start,
   KrylovKit's explicit final residual) dominate. A custom GMRES trusting the
-  recurrence residual would save one application per solve (about 27%), but it
-  gives up the explicit local residual.
+  recurrence residual would save one application per iterating solve. Measured
+  on the 4.5→5 fs interval: 368 -> 325 applications (11.7%), because about half
+  the solves return before iterating without a recompute. Its recurrence
+  residual matched the true residual to within 2.9e-9*tol (0 false acceptances
+  in 43 iterating solves); at the old ~1e-12*norm(b) tolerance the gap grows to
+  3.6e-4*tol. What it would give up is mainly detection of a broken local
+  action (buffer aliasing, races), not numerical accuracy.
 
 Interleaved 5 fs trajectories, two rounds of two each (same error 6.659e-4):
 - committed HEAD: about 9.3 s, 8.8 GB;
