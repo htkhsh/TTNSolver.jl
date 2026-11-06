@@ -10,6 +10,15 @@ julia --startup-file=no --project=. examples/basic_ttn.jl
 
 ## Time-evolution algorithms
 
+Experimental **space-time TTN AMEn** uses Chebyshev or Crank–Nicolson time
+discretization, recursive ALS/GMRES and residual rank enrichment, following
+[Dolgov](https://arxiv.org/abs/1403.8085). `tamen_evolve` adapts interval lengths
+using a refined-grid time defect; `tamen_step` solves a single interval.
+Multiple linear invariants, reusable workspaces and accepted-interval warm starts
+are supported. `als_sweep=:etter, threaded=true` enables sibling ALS solves
+following [Etter's parallel tree sweep](https://doi.org/10.1137/15M1038852).
+See [options and remaining TT parity gaps](docs/tamen.md).
+
 The first-order recursive augmented BUG integrator updates subtree bases from
 leaves to root, evolves in the Galerkin spaces augmented by old and updated
 bases, and truncates the resulting ranks. Local

@@ -17,12 +17,12 @@ function _parallel_core_block(operator,boundary,left,right,x,output_size)
     pi,po = reshape(parent_in,p,:),reshape(acted,a,:)
     for term in terms
         B,L,R = term.factors
-        mul!(lm,L,left_in)
+        isone(L) ? copyto!(lm,left_in) : mul!(lm,L,left_in)
         # Directly shuffle left/parent/right -> right/parent/left.
         permutedims!(right_in,left_out,(3,2,1))
-        mul!(ro,R,ri)
+        isone(R) ? copyto!(ro,ri) : mul!(ro,R,ri)
         permutedims!(parent_in,right_out,(2,3,1))
-        mul!(po,B,pi)
+        isone(B) ? copyto!(po,pi) : mul!(po,B,pi)
         result .+= term.coefficient .* acted
     end
     return result

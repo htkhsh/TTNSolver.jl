@@ -29,24 +29,30 @@ function _map_unique_pairs(f, left, right)
     return result
 end
 
-function _leaf_operators(operator, mode, bra, ket=bra)
+function _leaf_operators(operator, mode, bra, ket=bra; orthonormal=false)
     cache = Dict{Union{Nothing,Matrix{ComplexF64}},Matrix{ComplexF64}}()
     result = Vector{Matrix{ComplexF64}}(undef, length(operator.terms))
     for (k,term) in enumerate(operator.terms)
         factor = get(term.factors, mode, nothing)
         result[k] = get!(cache, factor) do
-            bra' * (isnothing(factor) ? ket : factor * ket)
+            if orthonormal && bra === ket && isnothing(factor)
+                Matrix{ComplexF64}(I,size(bra,2),size(bra,2))
+            else
+                bra' * (isnothing(factor) ? ket : factor * ket)
+            end
         end
     end
     return result
 end
 
-function _subtree_operators(core, left, right)
+function _subtree_operators(core, left, right; orthonormal=false)
     basis = _basis_matrix(core)
-    return _mixed_subtree_operators(basis, core, left, right)
+    return _mixed_subtree_operators(basis, core, left, right; orthonormal)
 end
 
-function _mixed_subtree_operators(bra, core, left, right)
+# orthonormal=true asserts that bra is the isometric basis represented by core.
+# Mixed old/new frames and general public environments must leave it false.
+function _mixed_subtree_operators(bra, core, left, right; orthonormal=false)
     isempty(left) && return Matrix{ComplexF64}[]
     p,l,r = size(core)
     a,b = size(first(left),1),size(first(right),1)
@@ -61,9 +67,12 @@ function _mixed_subtree_operators(bra, core, left, right)
     lm,ri,ro = reshape(left_out,a,:),reshape(right_in,r,:),reshape(right_out,b,:)
     basis = reshape(projected,a*b,p)
     return _map_unique_pairs(left, right) do L,R
-        mul!(lm,L,left_in)
+        if orthonormal && isone(L) && isone(R)
+            return Matrix{ComplexF64}(I,p,p)
+        end
+        isone(L) ? copyto!(lm,left_in) : mul!(lm,L,left_in)
         permutedims!(right_in,left_out,(3,2,1))
-        mul!(ro,R,ri)
+        isone(R) ? copyto!(ro,ri) : mul!(ro,R,ri)
         permutedims!(projected,right_out,(3,1,2))
         bra' * basis
     end
@@ -83,25 +92,26 @@ function _complement_operator(Q, boundary, sibling)
     return Q' * reshape(acted, b*s, :)
 end
 
-function _complement_operators(Q, boundary, sibling)
+function _complement_operators(Q, boundary, sibling; orthonormal=false)
     isempty(boundary) && return Matrix{ComplexF64}[]
     b,s = size(first(boundary),1),size(first(sibling),1)
     # Express the complement as a subtree with Q as both bra and ket. This
     # uses the same buffered contraction for all distinct boundary pairs.
     core = permutedims(reshape(Q,b,s,:),(3,1,2))
-    return _mixed_subtree_operators(Q,core,boundary,sibling)
+    return _mixed_subtree_operators(Q,core,boundary,sibling; orthonormal)
 end
 
-function _upward_operators(operator, state)
+function _upward_operators(operator, state; orthonormal=false)
     up = [Vector{Matrix{ComplexF64}}(undef, length(operator.terms))
           for _ in state.tree.children]
     modes = Dict(node => mode for (mode, node) in enumerate(state.tree.leaf_order))
     for node in state.tree.postorder
+        isometry = orthonormal && node != state.tree.root
         up[node] = if _isleaf(state.tree, node)
-            _leaf_operators(operator, modes[node], state.leaves[node])
+            _leaf_operators(operator, modes[node], state.leaves[node];orthonormal=isometry)
         else
             left, right = state.tree.children[node]
-            _subtree_operators(state.cores[node], up[left], up[right])
+            _subtree_operators(state.cores[node], up[left], up[right];orthonormal=isometry)
         end
     end
     return up

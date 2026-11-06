@@ -65,7 +65,8 @@ function _parallel_local_solve(prepared,operator,node,h,krylov_tol,krylovdim,kry
     iszero(scale) && return (;value=copy(x),error=0.0,solves=1,skipped=0,dimension=length(x))
     y,info = KrylovKit.exponentiate(rhs,Float64(h),x/scale;
         ishermitian=false,issymmetric=false,tol=Float64(krylov_tol),
-        krylovdim=min(Int(krylovdim),length(x)),maxiter=Int(krylov_maxiter),verbosity=0)
+        krylovdim=min(Int(krylovdim),length(x)),maxiter=Int(krylov_maxiter),
+        eager=true,verbosity=0)
     info.converged == 1 || throw(LocalSolveFailure(:nonconvergence,Float64(info.normres)))
     value = scale .* y
     all(isfinite,value) || throw(LocalSolveFailure(:nonfinite,Inf))

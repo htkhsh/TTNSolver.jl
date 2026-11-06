@@ -31,7 +31,7 @@ function _prepare_bug_step(state, operator, conserved, maxrank)
             throw(ArgumentError("maxrank cannot hold the conserved directions"))
     end
     tree = old.tree
-    up = _upward_operators(operator, old)
+    up = _upward_operators(operator, old;orthonormal=true)
     initial = Vector{Union{Matrix{ComplexF64},Array{ComplexF64,3}}}(undef,length(tree.children))
     boundary = Vector{Vector{Matrix{ComplexF64}}}(undef,length(tree.children))
     root = tree.root
@@ -45,7 +45,7 @@ function _prepare_bug_step(state, operator, conserved, maxrank)
             fac = qr(complement)
             rank = min(size(complement)...)
             Q,R = Matrix(fac.Q)[:,1:rank],Matrix(fac.R)
-            boundary[child] = _complement_operators(Q,boundary[node],up[sibling])
+            boundary[child] = _complement_operators(Q,boundary[node],up[sibling];orthonormal=true)
             initial[child] = _isleaf(tree,child) ? old.leaves[child] * transpose(R) :
                 _parent_product(old.cores[child],R)
             descend(child)
@@ -156,7 +156,8 @@ function _prepared_bug_step(prepared, operator, h;
         # IVP and restore its amplitude, so small coefficients still update.
         y, info = KrylovKit.exponentiate(rhs, Float64(h), x / scale;
             ishermitian=false, issymmetric=false, tol=Float64(krylov_tol),
-            krylovdim=min(Int(krylovdim), length(x)), maxiter=Int(krylov_maxiter), verbosity=0)
+            krylovdim=min(Int(krylovdim), length(x)), maxiter=Int(krylov_maxiter),
+            eager=true, verbosity=0)
         info.converged == 1 || throw(LocalSolveFailure(:nonconvergence, Float64(info.normres)))
         all(isfinite, y) || throw(LocalSolveFailure(:nonfinite, Inf))
         restored = scale .* y
@@ -182,7 +183,7 @@ function _prepared_bug_step(prepared, operator, h;
             if !isnothing(c)
                 conserved_overlap[child] = Uhat' * c.leaves[child]
             end
-            upnew[child] = _leaf_operators(operator,modes[child],Uhat)
+            upnew[child] = _leaf_operators(operator,modes[child],Uhat;orthonormal=true)
         else
             evolved, _ = evolve_core(child)
             left, right = tree.children[child]
@@ -195,7 +196,7 @@ function _prepared_bug_step(prepared, operator, h;
             if !isnothing(c)
                 conserved_overlap[child] = Uhat' * protected
             end
-            upnew[child] = _subtree_operators(updated[child],upnew[left],upnew[right])
+            upnew[child] = _subtree_operators(updated[child],upnew[left],upnew[right];orthonormal=true)
         end
     end
 

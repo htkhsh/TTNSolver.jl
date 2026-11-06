@@ -92,11 +92,13 @@ end
 
 """
     truncate!(state; atol=1e-10, maxrank=typemax(Int), conserved=nothing,
-              weighting=:weighted)
+              weighting=:weighted, fixed_leaves=Int[])
 
 Root-to-leaf SVD compression, protecting all subtree directions of an optional
 TTN linear functional. Its subtree spaces must already be contained in state
 (augmented_bug_step arranges this). No normalization is performed.
+`conserved` may also be a vector of TTNs, protecting the union of their subtree
+directions rather than a sum of their values (which could cancel).
 
 The absolute error budget is shared over edges. The default `weighting=:weighted`
 propagates complementary amplitudes by thin QR and uses their full-state
@@ -106,24 +108,49 @@ of error bounds; roundoff is not included. A rank
 cap can exceed the budget, reported by `tolerance_met=false`, but cannot
 discard a protected direction. Leaves/cores are root-orthogonal on return.
 Invalid options or incompatible protected spaces leave the input unchanged.
+`fixed_leaves` lists leaf node IDs whose full current basis is retained, exempt
+from `maxrank`. This supports an uncompressed time basis in space-time solves.
 """
 function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved=nothing,
-                   weighting=:weighted)
+                   weighting=:weighted, fixed_leaves=Int[])
     _compression_options(atol, maxrank)
     _check_truncation_weighting(weighting)
-    c = _canonical_conserved(state, conserved)
+    all(n -> n isa Integer && n in state.tree.leaf_order, fixed_leaves) ||
+        throw(ArgumentError("fixed_leaves must contain leaf node IDs"))
+    fixed = Set(fixed_leaves)
+    cs = conserved isa AbstractVector ? [_canonical_conserved(state,c) for c in conserved] :
+         isnothing(conserved) ? TTNTensor[] : [_canonical_conserved(state,conserved)]
+    all(c->c isa TTNTensor,cs) || throw(ArgumentError("conserved entries must be TTNs"))
     x = orthogonalize!(copy(state))
     tree = x.tree
-    overlaps = isnothing(c) ? nothing : _subtree_overlaps(x, c)
-    if !isnothing(c)
+    all_overlaps = [_subtree_overlaps(x,c) for c in cs]
+    overlaps = isempty(cs) ? nothing : length(cs)==1 ? first(all_overlaps) :
+        [hcat((o[node] for o in all_overlaps)...) for node in eachindex(tree.children)]
+    if !isempty(cs)
         for node in tree.postorder
             node == tree.root && continue
-            Z = overlaps[node]
-            norm(Z' * Z - I) <= 1e-10 * max(1, size(Z, 2)) ||
-                throw(ArgumentError("conserved subtree space is absent at node $node; augment first"))
-            size(Z, 2) <= maxrank || throw(ArgumentError("maxrank cannot hold the conserved directions"))
+            for o in all_overlaps
+                Z = o[node]
+                norm(Z' * Z - I) <= 1e-10 * max(1, size(Z, 2)) ||
+                    throw(ArgumentError("conserved subtree space is absent at node $node; augment first"))
+            end
+            length(cs)>1 && (overlaps[node] = _orth_columns(overlaps[node]))
+            (node in fixed || size(overlaps[node],2) <= maxrank) ||
+                throw(ArgumentError("maxrank cannot hold the conserved directions"))
         end
     end
+    info = _truncate_canonical!(x;atol,maxrank,weighting,overlaps,fixed)
+    merge!(state.leaves, x.leaves)
+    merge!(state.cores, x.cores)
+    return info
+end
+
+# Internal kernel for independently owned, root-orthogonal tensors. Validation,
+# protection checks and transactional copying remain in the public wrapper.
+# Canonical sum assembly can call this directly without a redundant copy/QR.
+function _truncate_canonical!(x;atol,maxrank,weighting=:weighted,
+                              overlaps=nothing,fixed=Set{Int}(),canonicalize::Bool=true,timings=nothing)
+    tree = x.tree
     weighted = weighting == :weighted
     scale = weighted ? 1.0 : max(1.0, norm(x))
     factors = weighted ? Vector{Matrix{ComplexF64}}(undef,length(tree.children)) : nothing
@@ -137,6 +164,7 @@ function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved
         _isleaf(tree, node) && continue
         for (child, mode) in zip(tree.children[node], (2, 3))
             C = x.cores[node]
+            started=_residual_tick(timings)
             if weighted
                 # Complementary bases are orthonormal before cuts in other
                 # branches. Later orthogonal projections there can only
@@ -147,9 +175,14 @@ function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved
             else
                 M = Matrix(transpose(_complement_matrix(C, mode)))
             end
-            P = isnothing(c) ? zeros(ComplexF64, size(M, 1), 0) : overlaps[child]
-            W, dropped = _retained_space(M, P, budget, maxrank)
+            _residual_record!(timings,Val(:weight_qr_seconds),started)
+            started=_residual_tick(timings)
+            P = isnothing(overlaps) ? zeros(ComplexF64, size(M, 1), 0) : overlaps[child]
+            W, dropped = child in fixed ? (Matrix{ComplexF64}(I,size(M,1),size(M,1)),0.0) :
+                _retained_space(M, P, budget, maxrank)
             discarded_bound += scale * dropped
+            _residual_record!(timings,Val(:svd_seconds),started)
+            started=_residual_tick(timings)
             # Coefficients transform by W', hence the transposed outside
             # factor transforms by conj(W), not W or W'.
             weighted && (factors[child] = R * conj.(W))
@@ -159,11 +192,10 @@ function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved
             else
                 x.cores[child] = _parent_product(x.cores[child], transpose(W))
             end
+            _residual_record!(timings,Val(:basis_update_seconds),started)
         end
     end
-    orthogonalize!(x)
-    merge!(state.leaves, x.leaves)
-    merge!(state.cores, x.cores)
-    return (; ranks=tree_ranks(state), discarded_bound,
+    canonicalize && orthogonalize!(x)
+    return (; ranks=tree_ranks(x), discarded_bound,
             tolerance_met=discarded_bound <= Float64(atol))
 end

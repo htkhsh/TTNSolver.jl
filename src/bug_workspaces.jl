@@ -50,36 +50,45 @@ end
 # Scratch storage belongs to one sequential local Krylov solve. Never return
 # a scratch array: Arnoldi retains action outputs while applying the operator
 # again. Grouping may change summation roundoff, not the represented operator.
-function _leaf_rhs_workspace(operator, mode, boundary, initial)
-    local_product = similar(initial)
-    acted = similar(initial)
+function _leaf_rhs_workspace(operator, mode, boundary, initial; buffers=nothing)
+    local_product,acted = isnothing(buffers) ? (similar(initial),similar(initial)) : buffers
     transposed = transpose.(boundary)
+    identity_boundary = isone.(boundary)
     function action(x)
         result = zeros(ComplexF64,size(x))
         for (k,term) in enumerate(operator.terms)
             iszero(term.coefficient) && continue
             if haskey(term.factors,mode)
                 mul!(local_product,term.factors[mode],x)
-                mul!(acted,local_product,transposed[k])
+                source = local_product
             else
-                mul!(acted,x,transposed[k])
+                source = x
             end
-            result .+= term.coefficient .* acted
+            if !identity_boundary[k]
+                mul!(acted,source,transposed[k])
+                source = acted
+            end
+            result .+= term.coefficient .* source
         end
         return result
     end
     return action
 end
 
-function _core_rhs_workspace(operator, boundary, left, right, initial)
+function _core_rhs_workspace(operator, boundary, left, right, initial; buffers=nothing)
     terms = _group_core_terms(operator, boundary, left, right)
+    identities = [isone.(t.factors) for t in terms]
     p,l,r = size(initial)
-    left_input = Array{ComplexF64}(undef,l,p,r)
-    left_output = similar(left_input)
-    right_input = Array{ComplexF64}(undef,r,p,l)
-    right_output = similar(right_input)
-    projected_right = similar(initial)
-    acted = similar(initial)
+    if isnothing(buffers)
+        left_input = Array{ComplexF64}(undef,l,p,r)
+        left_output = similar(left_input)
+        right_input = Array{ComplexF64}(undef,r,p,l)
+        right_output = similar(right_input)
+        projected_right = similar(initial)
+        acted = similar(initial)
+    else
+        left_input,left_output,right_input,right_output,projected_right,acted = buffers
+    end
     # Cache matrix views too; their array storage is shared with the tensors.
     left_in,left_out = reshape(left_input,l,:),reshape(left_output,l,:)
     right_in,right_out = reshape(right_input,r,:),reshape(right_output,r,:)
@@ -87,14 +96,30 @@ function _core_rhs_workspace(operator, boundary, left, right, initial)
     function action(x)
         result = zeros(ComplexF64,size(x))
         permutedims!(left_input,x,(2,1,3))
-        for term in terms
+        for (term,(bi,li,ri)) in zip(terms,identities)
             B,L,R = term.factors
-            mul!(left_out,L,left_in)
-            permutedims!(right_input,left_output,(3,2,1))
-            mul!(right_out,R,right_in)
-            permutedims!(projected_right,right_output,(2,3,1))
-            mul!(parent_out,B,parent_in)
-            result .+= term.coefficient .* acted
+            if li && ri
+                source = x
+            else
+                if li
+                    permutedims!(right_input,x,(3,1,2))
+                else
+                    mul!(left_out,L,left_in)
+                    permutedims!(right_input,left_output,(3,2,1))
+                end
+                if ri
+                    permutedims!(projected_right,right_input,(2,3,1))
+                else
+                    mul!(right_out,R,right_in)
+                    permutedims!(projected_right,right_output,(2,3,1))
+                end
+                source = projected_right
+            end
+            if !bi
+                mul!(parent_out,B,reshape(source,p,:))
+                source = acted
+            end
+            result .+= term.coefficient .* source
         end
         return result
     end
