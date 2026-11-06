@@ -99,3 +99,16 @@ Interleaved 5 fs trajectories, two rounds of two each (same error 6.659e-4):
 - items 7–10: about 7.3 s, 4.86 GB.
 
 Tests: TTNSolver 2845, TTNDynamics 595, benchmark verify 16.
+
+## Follow-up: GC (d258229)
+
+- [x] 13. GC upper bound on 5 fs: disabling GC during steps saves about 14%;
+  4 GC threads save about 7% (benchmark keeps 1 for comparability with TT).
+- [x] 14. Scratch buffers for up to three recent shapes per node; Chebyshev
+  time error reuses the final root-only solve's spatial-root environments;
+  Chebyshev's identity M is no longer an explicit time factor. Allocation
+  4.86 -> 4.72 GB, about 5% faster. Remaining allocations are mostly KrylovKit
+  bases and action outputs, and truncation copies.
+
+The tree study (centered-system HEOM trees, TTNDynamics) is recorded in
+`TTNDynamics/docs/holstein_tree_center.md`.
