@@ -63,15 +63,39 @@ function _tamen_grid!(w,nt,h,scheme)
     return (;nodes,D,M,d0,scheme)
 end
 
-function _tamen_buffers!(work,node,initial)
+# A node's local tensor changes shape around child solves and as ranks grow.
+# Each slot keeps scratch for a few shapes, most recently used first, so
+# alternating shapes reuse their buffers instead of reallocating each solve.
+const _TAMEN_BUFFER_SHAPES = 3
+
+function _slot_buffers!(slot,initial)
     signature = size(initial)
-    cached = get(work.buffers,node,nothing)
-    if !isnothing(cached) && cached.signature == signature
+    isnothing(slot) && return nothing
+    for (i,entry) in enumerate(slot)
+        if entry.signature == signature
+            i == 1 || (deleteat!(slot,i); pushfirst!(slot,entry))
+            return entry.buffers
+        end
+    end
+    return nothing
+end
+
+function _slot_store(slot,initial,buffers)
+    entries = isnothing(slot) ? Any[] : slot
+    pushfirst!(entries,(signature=size(initial),buffers))
+    length(entries) > _TAMEN_BUFFER_SHAPES && pop!(entries)
+    return entries
+end
+
+function _tamen_buffers!(work,node,initial)
+    slot = get(work.buffers,node,nothing)
+    cached = _slot_buffers!(slot,initial)
+    if !isnothing(cached)
         work.buffer_reuses += 1
-        return cached.buffers
+        return cached
     end
     buffers = _new_tamen_buffers(initial)
-    work.buffers[node] = (;signature,buffers)
+    work.buffers[node] = _slot_store(slot,initial,buffers)
     work.buffer_allocations += 1
     return buffers
 end

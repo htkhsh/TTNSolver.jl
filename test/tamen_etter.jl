@@ -53,7 +53,8 @@ end
     @test s.matvecs==p.matvecs && s.local_solves==p.local_solves
     @test p.spawned_tasks==min(Threads.nthreads(:default),8)-1
     # No alias between scratch owned by different nodes; repeat to reuse slots.
-    allbuffers = [buf for entry in values(w.buffers) for buf in entry.buffers]
+    # Each node keeps a short list of shape-specific buffer sets.
+    allbuffers = [buf for slot in values(w.buffers) for entry in slot for buf in entry.buffers]
     @test length(Set(objectid.(allbuffers)))==length(allbuffers)
     allocations = w.buffer_allocations
     TTNSolver._tamen_etter_sweep!(copy(initial),A,target,0;options...,workspace=w,threaded=true)

@@ -68,3 +68,23 @@ old_projection_error(sol,u0) = ttn_distance(sol.initial,TTNSolver._spatial_coeff
         @test TTNSolver._tamen_projection_error(skewed,u0) == old_projection_error(skewed,u0)
     end
 end
+
+@testset "Time error reuses the final root environments" begin
+    op,x = tt_acceptance_model(seed=6)
+    grid = TTNSolver._tamen_grid(6,0.4,:cheb)
+    A = TTNSolver._spacetime_operator(op,grid)
+    # Chebyshev spatial terms carry no explicit identity time factor.
+    @test all(t->!haskey(t.factors,length(op.dimensions)+1),A.terms[2:end])
+    @test dense(A) ≈ kron(grid.D,Matrix{ComplexF64}(I,size(dense(op))...)) -
+        kron(Matrix{ComplexF64}(I,6,6),dense(op))
+    cn = TTNSolver._spacetime_operator(op,TTNSolver._tamen_grid(5,0.4,:cn))
+    @test all(t->haskey(t.factors,length(op.dimensions)+1),cn.terms[2:end])
+    for lo in (:sop,:channels), scheme in (:cheb,:cn)
+        points = scheme == :cheb ? 6 : 5
+        _,d = tamen_step(x,op,0.4;time_points=points,time_scheme=scheme,rtol=1e-9,maxrank=9,
+            kickrank=2,estimate_time_error=true,local_operator=lo)
+        recomputed = TTNSolver._tamen_time_error(d.solution,op;local_operator=lo)
+        @test d.time_error.absolute ≈ recomputed.absolute rtol=1e-8 atol=1e-14
+        @test d.time_error.initial_projection_error ≈ recomputed.initial_projection_error rtol=1e-8 atol=1e-15
+    end
+end

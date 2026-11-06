@@ -131,7 +131,8 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         solve!(node)
     end
     visit!(tree.root)
-    return (;local_solves,matvecs,iterations,max_residual,environment_seconds)
+    # `up`/`cross` remain valid for x's non-root nodes (only root_only reuses them).
+    return (;local_solves,matvecs,iterations,max_residual,environment_seconds,up,cross)
 end
 
 """
@@ -346,6 +347,7 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     global_checks = residual_updates = 0
     environment_seconds = 0.0
     converged = false
+    last_root_environments = nothing
     residual_bound = compression_bound = Inf
     function prepare(x)
         for c in protected
@@ -367,6 +369,7 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         # Reinsert conserved directions after local basis updates and solve in
         # c ⊗ I_time test space. Never truncate again after this root solve.
         rootstats = _tamen_sweep!(x,local_A,b,time_leaf;tol=localtol,krylovdim,krylov_maxiter,workspace,threaded,root_only=true)
+        last_root_environments = (;up=rootstats.up,cross=rootstats.cross)
         als_seconds += (time_ns()-started)/1e9
         total_solves += stats.local_solves+rootstats.local_solves
         total_matvecs += stats.matvecs+rootstats.matvecs
@@ -426,8 +429,11 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     invariant_values = length(cs)==1 ? vec(invariant_history) :
         isempty(cs) ? ComplexF64[] : invariant_history
     error_started = time_ns()
+    # The final root-only solve changed only the root, so its spatial-root
+    # environments still describe the returned basis.
     time_error = estimate_time_error && converged ?
-        _tamen_time_error(solution,generator;threaded,local_operator) : nothing
+        _tamen_time_error(solution,generator;threaded,local_operator,
+            spacetime_operator=local_A,root_environments=last_root_environments) : nothing
     time_error_seconds = (time_ns()-error_started)/1e9
     warm_started = time_ns()
     next_warm_start = store_warm_start && converged ? TAMEnWarmStart(solution,auxiliary) : nothing

@@ -63,7 +63,8 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
     down[tree.root] = _root_boundary(A)
     rhsdown[tree.root] = ones(ComplexF64,1,1)
     orthonormal = _assume_orthonormal(A)
-    slots = Any[get(workspace.buffers,node,nothing) for node in 1:n]
+    # Private copies of the slot lists; the workspace is updated after joining.
+    slots = Any[(s = get(workspace.buffers,node,nothing); isnothing(s) ? nothing : copy(s)) for node in 1:n]
     allocations,reuses,solves,matvecs,iterations,spawned = (zeros(Int,n) for _ in 1:6)
     residuals = zeros(n)
     sizes = ones(Int,n)
@@ -71,13 +72,13 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
         _isleaf(tree,node) || (sizes[node] += sum(sizes[c] for c in tree.children[node]))
     end
     function buffers!(node,initial)
-        cached = slots[node]
-        if !isnothing(cached) && cached.signature == size(initial)
+        cached = _slot_buffers!(slots[node],initial)
+        if !isnothing(cached)
             reuses[node] += 1
-            return cached.buffers
+            return cached
         end
         buffers = _new_tamen_buffers(initial)
-        slots[node] = (signature=size(initial),buffers=buffers)
+        slots[node] = _slot_store(slots[node],initial,buffers)
         allocations[node] += 1
         return buffers
     end

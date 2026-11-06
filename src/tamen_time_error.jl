@@ -1,17 +1,26 @@
 # Integrated defect on a finer temporal grid in the final spatial space.
 # No second spatial ALS solve, full tensor, or global generator is needed.
-function _tamen_time_error(solution,generator;threaded=false,local_operator=:channels)
+function _tamen_time_error(solution,generator;threaded=false,local_operator=:channels,
+                           spacetime_operator=nothing,root_environments=nothing)
     x = solution.state
     spatial_root = solution.initial.tree.root
     nt = size(x.leaves[solution.time_leaf],1)
-    op = SumOfProducts([generator.dimensions;nt],generator.terms)
-    initial_lift = _time_lift(solution.initial,ones(nt))
-    A = _local_operator(op,x.tree,local_operator)
-    up,cross = _tamen_upward(A,x,initial_lift;threaded)
     C = x.cores[x.tree.root]
     rank = size(C,2)
-    L = _projected_spatial_generator(A,up,spatial_root,x.tree.root,rank)
-    u0 = vec(cross[spatial_root])
+    if solution.time_scheme == :cheb && !isnothing(spacetime_operator) && !isnothing(root_environments)
+        # Reuse the final solve's spatial-root environments of the space-time
+        # operator D⊗I - I⊗L; Chebyshev spatial terms carry no time factor.
+        L = _spatial_generator_from_spacetime(spacetime_operator,root_environments.up[spatial_root],
+            solution.time_leaf,x.tree.root,rank)
+        u0 = vec(root_environments.cross[spatial_root])
+    else
+        op = SumOfProducts([generator.dimensions;nt],generator.terms)
+        initial_lift = _time_lift(solution.initial,ones(nt))
+        A = _local_operator(op,x.tree,local_operator)
+        up,cross = _tamen_upward(A,x,initial_lift;threaded)
+        L = _projected_spatial_generator(A,up,spatial_root,x.tree.root,rank)
+        u0 = vec(cross[spatial_root])
+    end
     projection_error = _tamen_projection_error(solution,u0)
     frame = reshape(C,rank,size(C,3))*transpose(x.leaves[solution.time_leaf])
     coarse = solution.time_scheme == :cheb ? hcat(u0,frame) : hcat(u0,frame[:,2:end])
@@ -80,3 +89,24 @@ end
 
 _projection_error_fallback(solution,u0) =
     ttn_distance(solution.initial,_spatial_coefficients(solution,u0))
+
+# -L projected on the spatial root from the space-time operator's environments.
+# The SoP path relies on _spacetime_operator's order: the time derivative first,
+# then the negated spatial terms. Channels exclude transitions whose time-side
+# channel is not the identity (that is the D term).
+function _spatial_generator_from_spacetime(A::SumOfProducts,up,time_leaf,root,rank)
+    L = zeros(ComplexF64,rank,rank)
+    for k in 2:length(A.terms)
+        L .-= A.terms[k].coefficient .* up[k]
+    end
+    return L
+end
+function _spatial_generator_from_spacetime(A::_ChannelOperator,up,time_leaf,root,rank)
+    spatial_first = A.tree.children[root][2] == time_leaf
+    L = zeros(ComplexF64,rank,rank)
+    for (_,b,g,c) in A.transitions[root]
+        s,t = spatial_first ? (b,g) : (g,b)
+        isnothing(A.leaf_ops[time_leaf][t]) && (L .-= c .* up[s])
+    end
+    return L
+end

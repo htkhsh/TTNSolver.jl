@@ -91,7 +91,9 @@ function _spacetime_operator(op, grid)
     terms = [ProductTerm(1,Dict(time_mode=>grid.D))]
     for t in op.terms
         factors = copy(t.factors)
-        hasproperty(grid,:M) && (factors[time_mode] = grid.M)
+        # Chebyshev's M is the identity: leave the time factor implicit so
+        # identity environments and channels stay exact (same operator).
+        hasproperty(grid,:M) && !isone(grid.M) && (factors[time_mode] = grid.M)
         push!(terms,ProductTerm(-t.coefficient,factors))
     end
     return SumOfProducts([op.dimensions;length(grid.d0)],terms)
