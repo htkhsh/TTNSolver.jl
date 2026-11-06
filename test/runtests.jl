@@ -38,4 +38,7 @@ using TTNSolver
     include("tamen_time.jl")
     include("tamen_workspace.jl")
     include("tamen_adaptive.jl")
+    include("tamen_tt_acceptance.jl")
+    include("tamen_projection_error.jl")
+    include("tamen_channels.jl")
 end

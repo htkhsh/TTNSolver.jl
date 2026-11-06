@@ -17,7 +17,9 @@ using a refined-grid time defect; `tamen_step` solves a single interval.
 Multiple linear invariants, reusable workspaces and accepted-interval warm starts
 are supported. `als_sweep=:etter, threaded=true` enables sibling ALS solves
 following [Etter's parallel tree sweep](https://doi.org/10.1137/15M1038852).
-See [options and remaining TT parity gaps](docs/tamen.md).
+See [options and remaining TT parity gaps](docs/tamen.md). TT-style options
+(`truncation_rtol`, `certify=false`, `local_tol_factor`, `local_operator=:channels`)
+remove the global certificate and per-term environments that TT tAMEn does not use.
 
 The first-order recursive augmented BUG integrator updates subtree bases from
 leaves to root, evolves in the Galerkin spaces augmented by old and updated

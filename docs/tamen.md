@@ -309,6 +309,10 @@ When loading both packages, qualify `TTNSolver.TAMEnWorkspace()` versus
 | Time-dependent/state-dependent operator and RHS | Callback interfaces | Not yet implemented; autonomous homogeneous SoP only |
 | Residual enrichment | Local AMEn residual sweeps | Auxiliary residual ALS between solution sweeps, global verified acceptance |
 | Compression modes | `trunc_norm` | Weighted truncation, global residual stopping |
+| Solution truncation | Each local SVD at `tol/sqrt(d)` | Off by default; `truncation_rtol` per sweep |
+| Acceptance | Local update/residual sizes | Certified global residual; `certify=false` uses the local estimate |
+| Local tolerance | `tol/sqrt(d)` | `local_tol_factor*target` (default 0.01) |
+| Local operator | MPO environments | Exact sparse channels by default; `local_operator=:sop` per term |
 
 This is functional alignment, not bit-for-bit API or adaptive-mesh compatibility.
 Defaults and local solver algorithms differ. Dense-output interpolation explicitly
@@ -332,6 +336,59 @@ off and a single interval. It is not part of the package test dependencies.
 On 2026-11-06 the endpoint differences were 2.48e-16 (Chebyshev) and 5.66e-16
 (CN). This checks discretization parity, not adaptive-mesh identity or large
 low-rank performance; it can be rerun with the command in the script header.
+
+## TT-style acceptance and channel environments
+
+Four options remove work that TT tAMEn does not do. Since 2026-11-06,
+`local_tol_factor=0.01` and `local_operator=:channels` are the defaults; they
+change cost, not the acceptance criterion. Truncation and uncertified acceptance
+remain opt-in. Pass `local_tol_factor=nothing, local_operator=:sop` for the
+previous behaviour.
+
+```julia
+y, info = tamen_step(x, L, h; rtol=5e-5, maxrank=96, kickrank=4,
+    als_sweep=:etter, threaded=true,
+    truncation_rtol=1e-5,      # weighted truncation after every sweep
+    certify=false,             # accept on the auxiliary residual estimate
+    local_tol_factor=0.01,     # local GMRES to 1% of the acceptance target
+    local_operator=:channels)  # exact sparse channel environments
+info.certified                 # false: no global residual was formed
+```
+
+- `truncation_rtol` truncates the space-time solution with the weighted budget
+  `truncation_rtol*norm(x)`, keeping protected directions and the time basis.
+  Keep it below `rtol` (for example `rtol/3`). The final root solve cannot
+  restore discarded non-root directions.
+- `certify=false` never builds the global residual and accepts when the
+  projected auxiliary residual norm reaches the target. That projection can
+  underestimate `norm(b-A*x)`, so choose `rtol` tighter than the accuracy you
+  need and validate against a reference. Requires `residual_method=:local`.
+  A strict failure throws `TAMEnConvergenceError` with reason
+  `:residual_estimate`.
+- `local_tol_factor=f` (default 0.01) sets the local GMRES absolute tolerance
+  to `f*max(atol,rtol*norm(b))`. `nothing` restores the previous rule, which
+  with `krylov_tol=1e-12` resolves local systems to about `1e-12*norm(b)`.
+- `local_operator=:channels` (default) builds, once per interval, an exact sparse tree
+  operator from the SoP. At each edge a term is either absent (identity
+  channel), complete inside the subtree (summed "done" channel), or open.
+  Open terms are keyed by their factors on one side, and each coefficient is
+  applied once, at the support leaf touched by the fewest terms. Nodes store
+  transitions `(α,β,γ,c)`. Upward and downward environments and local
+  operators all follow from these transitions. For split HEOM, a bath subtree
+  edge carries `2+2*sites` channels and a bath leaf carries 4. This replaces
+  roughly one environment per term. Identity channels in QR frames are exact
+  identities. The global certificate, when requested, still uses the SoP.
+
+`truncate!(state; rtol)` is the relative budget used by `truncation_rtol`.
+The time-error estimate now computes the initial projection error by
+recursively adding Gram matrices of mutually orthogonal components. It does
+not subtract squared norms, and it falls back to `ttn_distance` if a spatial
+basis is not orthonormal.
+
+Tests compare every edge operator `Σ D⊗U` and every local action against
+the SoP path. The test operators include three-body, scalar and zero
+coefficient terms, on irregular trees. Solutions, time errors and invariant
+protection are also compared.
 
 ## References and consulted code
 

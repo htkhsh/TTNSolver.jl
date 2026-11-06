@@ -38,6 +38,10 @@ end
 function _group_core_terms(operator, boundary, left, right)
     terms = [_CoreOperatorTerm(t.coefficient, (boundary[k], left[k], right[k]))
              for (k,t) in enumerate(operator.terms) if !iszero(t.coefficient)]
+    return _combine_all_core_terms(terms)
+end
+
+function _combine_all_core_terms(terms)
     while true
         count = length(terms)
         for axis in (2,3,1)
@@ -75,8 +79,10 @@ function _leaf_rhs_workspace(operator, mode, boundary, initial; buffers=nothing)
     return action
 end
 
-function _core_rhs_workspace(operator, boundary, left, right, initial; buffers=nothing)
-    terms = _group_core_terms(operator, boundary, left, right)
+_core_rhs_workspace(operator, boundary, left, right, initial; buffers=nothing) =
+    _core_terms_workspace(_group_core_terms(operator, boundary, left, right), initial; buffers)
+
+function _core_terms_workspace(terms, initial; buffers=nothing)
     identities = [isone.(t.factors) for t in terms]
     p,l,r = size(initial)
     if isnothing(buffers)

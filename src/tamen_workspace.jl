@@ -93,6 +93,8 @@ end
 # TTN Dicts or gauge centers from these tasks. Both branches join on failure.
 function _tamen_upward(A,x,b;threaded=false)
     tree = x.tree
+    # Non-root bases are orthonormal whenever sweeps call this (after prepare).
+    orthonormal = _assume_orthonormal(A)
     up = Vector{Vector{Matrix{ComplexF64}}}(undef,length(tree.children))
     cross = Vector{Matrix{ComplexF64}}(undef,length(tree.children))
     modes = Dict(node=>mode for (mode,node) in enumerate(tree.leaf_order))
@@ -102,7 +104,7 @@ function _tamen_upward(A,x,b;threaded=false)
     end
     function visit(node,budget)
         if _isleaf(tree,node)
-            up[node] = _leaf_operators(A,modes[node],x.leaves[node])
+            up[node] = _env_leaf(A,node,modes[node],x.leaves[node];orthonormal)
             cross[node] = x.leaves[node]'*b.leaves[node]
             return
         end
@@ -118,7 +120,8 @@ function _tamen_upward(A,x,b;threaded=false)
             visit(left,1)
             visit(right,1)
         end
-        up[node] = _subtree_operators(x.cores[node],up[left],up[right])
+        up[node] = _env_up(A,node,_basis_matrix(x.cores[node]),x.cores[node],up[left],up[right];
+            orthonormal=orthonormal && node != tree.root)
         cross[node] = _basis_matrix(x.cores[node])'*
             _basis_matrix(_project_children(b.cores[node],cross[left],cross[right]))
         return

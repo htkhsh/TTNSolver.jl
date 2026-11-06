@@ -10,7 +10,10 @@ end
 function Base.showerror(io::IO,e::TAMEnConvergenceError)
     print(io,"TTN tAMEn failed (",e.reason,")")
     d = e.diagnostics
-    if hasproperty(d,:relative_residual_bound)
+    if e.reason == :residual_estimate && hasproperty(d,:relative_residual_estimate)
+        print(io,": uncertified relative residual estimate=",d.relative_residual_estimate,
+              " after ",d.sweeps," sweeps")
+    elseif hasproperty(d,:relative_residual_bound)
         print(io,": relative residual bound=",d.relative_residual_bound,
               " after ",d.sweeps," sweeps")
     elseif hasproperty(d,:node)
@@ -63,8 +66,9 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
     environment_seconds = (time_ns()-environment_start)/1e9
     down = [Matrix{ComplexF64}[] for _ in tree.children]
     rhsdown = Vector{Matrix{ComplexF64}}(undef,length(tree.children))
-    down[tree.root] = [ones(ComplexF64,1,1) for _ in A.terms]
+    down[tree.root] = _root_boundary(A)
     rhsdown[tree.root] = ones(ComplexF64,1,1)
+    orthonormal = _assume_orthonormal(A)
     local_solves,matvecs,iterations = 0,0,0
     max_residual = 0.0
     function solve!(node)
@@ -73,11 +77,11 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         buffers = _tamen_buffers!(workspace,node,initial)
         if leaf
             rhs = b.leaves[node]*transpose(rhsdown[node])
-            action = _leaf_rhs_workspace(A,modes[node],down[node],initial;buffers)
+            action = _leaf_action(A,node,modes[node],down[node],initial;buffers)
         else
             left,right = tree.children[node]
             rhs = _parent_product(_project_children(b.cores[node],cross[left],cross[right]),rhsdown[node])
-            action = _core_rhs_workspace(A,down[node],up[left],up[right],initial;buffers)
+            action = _core_action(A,node,down[node],up[left],up[right],initial;buffers)
         end
         alg = KrylovKit.GMRES(;tol,krylovdim=min(krylovdim,length(initial)),maxiter=krylov_maxiter)
         result, report = KrylovKit.linsolve(action,rhs,initial,alg)
@@ -105,17 +109,17 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         for (child,sibling,mode) in ((left,right,2),(right,left,3))
             child == time_leaf && continue
             Q = _tamen_down!(x,node,child,mode)
-            down[child] = _complement_operators(Q,down[node],up[sibling])
+            down[child] = _env_down(A,node,mode,Q,down[node],up[sibling];orthonormal)
             B = _parent_product(_child_product(b.cores[node],cross[sibling],5-mode),rhsdown[node])
             rhsdown[child] = Q'*_complement_matrix(B,mode)
             visit!(child)
             _tamen_up!(x,node,child,mode)
             if _isleaf(tree,child)
-                up[child] = _leaf_operators(A,modes[child],x.leaves[child])
+                up[child] = _env_leaf(A,child,modes[child],x.leaves[child];orthonormal)
                 cross[child] = x.leaves[child]'*b.leaves[child]
             else
                 a,c = tree.children[child]
-                up[child] = _subtree_operators(x.cores[child],up[a],up[c])
+                up[child] = _env_up(A,child,_basis_matrix(x.cores[child]),x.cores[child],up[a],up[c];orthonormal)
                 cross[child] = _basis_matrix(x.cores[child])'*
                     _basis_matrix(_project_children(b.cores[child],cross[a],cross[c]))
             end
@@ -134,7 +138,9 @@ end
                conserved_observables=nothing, estimate_time_error=false,
                workspace=nothing, threaded=false, residual_method=:local,
                residual_sweeps=1, residual_check_every=4, residual_backend=:sop,
-               warm_start=nothing, store_warm_start=false, als_sweep=:serial)
+               warm_start=nothing, store_warm_start=false, als_sweep=:serial,
+               truncation_rtol=0, certify=true, local_tol_factor=0.01,
+               local_operator=:channels)
 
 Experimental AMEn-type fixed-interval solve for `dx/dt = generator*x`. Attach
 a full time leaf to a new binary root, discretize by Chebyshev collocation,
@@ -190,8 +196,9 @@ are sequential. Residual additions reuse node-owned projection/QR buffers.
 `workspace=TAMEnWorkspace()` reuses per-node scratch and temporal grids. It
 must not be shared by concurrent calls. There is no preconditioner yet.
 Unchecked history entries have `global_residual_checked=false` and infinite
-bound fields; `residual_estimate` is reported separately. Final diagnostics
-always contain a current global check. `global_checks` counts them, and
+bound fields; `residual_estimate` is reported separately. With the default
+`certify=true`, final diagnostics always contain a current global check and
+`certified` equals `converged`. `global_checks` counts them, and
 `residual_updates` counts auxiliary local projections. `residual_seconds` is
 the sum of `residual_local_seconds` and `residual_global_seconds`.
 `timings.residual_global_parts` splits the latter into addition, weight QR,
@@ -200,6 +207,43 @@ minor bookkeeping; do not add them again to `residual_global_seconds`.
 `als_parallel_tasks` counts spawned solution-subtree tasks. `sweep_seconds`
 times the main solution sweeps and is a subset of `als_seconds` (which also
 includes protected truncation and root repair); `environment_seconds` overlaps.
+
+## TT-style acceptance options
+
+Acceptance defaults remain certified and untruncated. The local tolerance and
+local operator defaults below were chosen after the 10-site Holstein study; they
+do not change what is accepted. Options matching TT tAMEn (`TTSolver.tamen`):
+
+- `truncation_rtol > 0` truncates the space-time solution after every sweep
+  with the weighted budget `truncation_rtol*norm(x)` (protected directions and
+  the time basis are kept). Without it, enrichment ranks are only capped by
+  `maxrank`. TT tAMEn truncates each local SVD at `tol/sqrt(d)`. Keep
+  `truncation_rtol` below `rtol` (for example `rtol/3`): the final root solve
+  cannot restore discarded non-root directions, so a larger budget can stall
+  the residual above its target.
+- `certify=false` never forms the global residual. An interval is accepted
+  when the projected auxiliary residual norm `residual_estimate <= target`.
+  That norm is a projection of `b-A*x` onto a rank-`kickrank` TTN and can
+  underestimate it; choose a tighter `rtol` than the accuracy you need and
+  validate against a reference. Requires `residual_method=:local`. Diagnostics
+  report `certified=false`, `global_checks=0` and infinite bound fields;
+  a strict failure has reason `:residual_estimate`.
+- `local_tol_factor=0.01` (default) sets the absolute local GMRES tolerance to
+  `local_tol_factor*target`. `local_tol_factor=nothing` restores the previous
+  `min(krylov_tol*norm(b),target/100)`, which with `krylov_tol=1e-12` is usually
+  far tighter than acceptance needs. Zero initial data still uses `krylov_tol`.
+
+`local_operator=:channels` (default) builds an exact sparse tree operator once per
+interval and uses it for ALS environments, local actions, auxiliary residuals
+and the time-error estimate. Terms sharing an edge factor are merged into
+channels (for HEOM, `2+2*sites` per bath subtree instead of one environment per
+term), and identity channels in orthonormal frames are exact identities.
+Global certification still uses the SoP term by term. `local_operator=:sop`
+restores the previous per-term environments.
+
+Combining `truncation_rtol` with `certify=true` is valid but can be costly:
+the truncation error enters the certified residual through `A*δx`, so tight
+`rtol` values need more sweeps and larger residual ranks.
 
 `warm_start` accepts a `TAMEnWarmStart` from a preceding accepted interval.
 Matching topology and initial/previous-endpoint data reuse its spatial bases
@@ -227,8 +271,11 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
                     conserved_observables=nothing,workspace,threaded::Bool=false,
                     residual_method=:local,residual_sweeps=1,residual_check_every=4,
                     residual_backend=:sop,
-                    warm_start=nothing,store_warm_start::Bool=false,als_sweep=:serial)
+                    warm_start=nothing,store_warm_start::Bool=false,als_sweep=:serial,
+                    truncation_rtol=0.0,certify::Bool=true,local_tol_factor=0.01,
+                    local_operator=:channels)
     _check_operator(generator,initial)
+    _check_local_operator(local_operator)
     _check_bug_options(atol,maxrank,krylov_tol,krylovdim,krylov_maxiter)
     rtol isa Real && isfinite(rtol) && rtol >= 0 && isfinite(Float64(rtol)) &&
         (iszero(rtol) || Float64(rtol)>0) ||
@@ -240,6 +287,13 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     residual_method in (:local,:global) || throw(ArgumentError("residual_method must be :local or :global"))
     residual_backend in (:sop,:ttno) || throw(ArgumentError("residual_backend must be :sop or :ttno"))
     als_sweep in (:serial,:etter) || throw(ArgumentError("als_sweep must be :serial or :etter"))
+    truncation_rtol isa Real && isfinite(truncation_rtol) && 0 <= truncation_rtol < 1 ||
+        throw(ArgumentError("truncation_rtol must be finite and in [0,1)"))
+    certify || residual_method == :local ||
+        throw(ArgumentError("certify=false requires residual_method=:local"))
+    isnothing(local_tol_factor) || (local_tol_factor isa Real && isfinite(local_tol_factor) &&
+        0 < local_tol_factor <= 1) ||
+        throw(ArgumentError("local_tol_factor must be nothing or a finite number in (0,1]"))
     for (name,value) in ((:maxsweeps,maxsweeps),(:kickrank,kickrank),(:residual_maxrank,residual_maxrank),
                          (:residual_sweeps,residual_sweeps),(:residual_check_every,residual_check_every))
         value isa Integer && value >= 1 || throw(ArgumentError("$name must be a positive integer"))
@@ -261,6 +315,9 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     A = _spacetime_operator(generator,grid)
     certificate_operator = nothing
     b = _time_lift(initial,grid.d0)
+    # ALS and auxiliary residuals may use exact channel environments; global
+    # certification always applies the original SoP term by term.
+    local_A = _local_operator(A,b.tree,local_operator)
     warm_started = time_ns()
     x,auxiliary,warm_start_status = _tamen_initial_guess(initial,grid,warm_start)
     warm_start_seconds = isnothing(warm_start) ? 0.0 : (time_ns()-warm_started)/1e9
@@ -273,7 +330,8 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     isfinite(target) && (iszero(bnorm) || target>0) ||
         throw(ArgumentError("scaled tolerance is zero or nonfinite in Float64"))
     # Zero initial data is exact and avoids a zero absolute GMRES tolerance.
-    localtol = iszero(bnorm) ? Float64(krylov_tol) : min(krylov_tol*bnorm,target/100)
+    localtol = iszero(bnorm) ? Float64(krylov_tol) :
+        isnothing(local_tol_factor) ? min(krylov_tol*bnorm,target/100) : Float64(local_tol_factor)*target
     localtol>0 && isfinite(localtol) || throw(ArgumentError("local tolerance underflow or overflow"))
     history = NamedTuple[]
     total_solves = total_matvecs = total_iterations = 0
@@ -289,7 +347,8 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         for c in protected
             x = enrich_basis(x,c)
         end
-        cut = truncate!(x;atol=0.0,maxrank,conserved=protected,fixed_leaves=[time_leaf])
+        # truncation_rtol=0 keeps every nonzero direction up to maxrank.
+        cut = truncate!(x;atol=0.0,rtol=truncation_rtol,maxrank,conserved=protected,fixed_leaves=[time_leaf])
         _identity_time!(x,time_leaf)
         return x,cut
     end
@@ -297,13 +356,13 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     for sweep in 1:maxsweeps
         started = time_ns()
         sweep! = als_sweep==:etter ? _tamen_etter_sweep! : _tamen_sweep!
-        stats = sweep!(x,A,b,time_leaf;tol=localtol,krylovdim,krylov_maxiter,workspace,threaded)
+        stats = sweep!(x,local_A,b,time_leaf;tol=localtol,krylovdim,krylov_maxiter,workspace,threaded)
         sweep_seconds += (time_ns()-started)/1e9
         als_sweep==:etter && (als_parallel_tasks += stats.spawned_tasks)
         x,cut = prepare(x)
         # Reinsert conserved directions after local basis updates and solve in
         # c ⊗ I_time test space. Never truncate again after this root solve.
-        rootstats = _tamen_sweep!(x,A,b,time_leaf;tol=localtol,krylovdim,krylov_maxiter,workspace,threaded,root_only=true)
+        rootstats = _tamen_sweep!(x,local_A,b,time_leaf;tol=localtol,krylovdim,krylov_maxiter,workspace,threaded,root_only=true)
         als_seconds += (time_ns()-started)/1e9
         total_solves += stats.local_solves+rootstats.local_solves
         total_matvecs += stats.matvecs+rootstats.matvecs
@@ -315,14 +374,16 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         residual_estimate = Inf
         if residual_method == :local
             started = time_ns()
-            auxiliary,rd = _tamen_local_residual(A,x,b,auxiliary;rank=kickrank,sweeps=residual_sweeps)
+            auxiliary,rd = _tamen_local_residual(local_A,x,b,auxiliary;rank=kickrank,sweeps=residual_sweeps)
             residual_estimate = rd.estimate
             residual_updates += rd.local_updates
             residual_local_seconds += (time_ns()-started)/1e9
         end
-        global_residual_checked = residual_method == :global ||
+        # certify=false never forms the global residual; acceptance then uses
+        # the projected auxiliary estimate, as TT tAMEn uses local quantities.
+        global_residual_checked = certify && (residual_method == :global ||
             !isfinite(residual_estimate) || residual_estimate <= target ||
-            sweep % residual_check_every == 0 || sweep == maxsweeps
+            sweep % residual_check_every == 0 || sweep == maxsweeps)
         residual = auxiliary
         if global_residual_checked
             started = time_ns()
@@ -346,7 +407,8 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
             global_residual_checked,
             discarded_bound=cut.discarded_bound,
             max_local_residual=max(stats.max_residual,rootstats.max_residual)))
-        converged = global_residual_checked && residual_bound <= target
+        converged = certify ? global_residual_checked && residual_bound <= target :
+            residual_estimate <= target
         (converged || sweep == maxsweeps) && break
         started = time_ns()
         truncate!(residual;atol=0.0,maxrank=kickrank)
@@ -360,14 +422,17 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     invariant_values = length(cs)==1 ? vec(invariant_history) :
         isempty(cs) ? ComplexF64[] : invariant_history
     error_started = time_ns()
-    time_error = estimate_time_error && converged ? _tamen_time_error(solution,generator;threaded) : nothing
+    time_error = estimate_time_error && converged ?
+        _tamen_time_error(solution,generator;threaded,local_operator) : nothing
     time_error_seconds = (time_ns()-error_started)/1e9
     warm_started = time_ns()
     next_warm_start = store_warm_start && converged ? TAMEnWarmStart(solution,auxiliary) : nothing
     if !isnothing(next_warm_start)
         warm_start_seconds += (time_ns()-warm_started)/1e9
     end
-    info = (;converged,solution,sweeps=length(history),history,residual_bound,time_error,
+    info = (;converged,certified=certify && converged,solution,sweeps=length(history),history,
+        residual_bound,time_error,
+        relative_residual_estimate=isempty(history) ? Inf : last(history).relative_residual_estimate,
         relative_residual_bound=iszero(bnorm) ? residual_bound : residual_bound/bnorm,
         residual_compression_bound=compression_bound,
         local_solves=total_solves,matvecs=total_matvecs,gmres_iterations=total_iterations,
@@ -381,6 +446,6 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         global_checks,residual_updates,als_sweep,als_parallel_tasks,
         threaded=threaded && Threads.nthreads(:default)>1,
         workspace_stats=_tamen_work_delta(workspace,work_before))
-    strict && !converged && throw(TAMEnConvergenceError(:global_residual,info))
+    strict && !converged && throw(TAMEnConvergenceError(certify ? :global_residual : :residual_estimate,info))
     return time_slice(solution,length(grid.nodes)),info
 end

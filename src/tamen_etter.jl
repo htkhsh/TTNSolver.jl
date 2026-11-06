@@ -6,7 +6,8 @@
 function _etter_child_frames(C,boundary,left_up,right_up,rhs;
                              cross_left=Matrix{ComplexF64}(I,size(C,2),size(C,2)),
                              cross_right=Matrix{ComplexF64}(I,size(C,3),size(C,3)),
-                             active=(true,true))
+                             active=(true,true),operator=nothing,node=0)
+    orthonormal = !isnothing(operator) && _assume_orthonormal(operator)
     virtual = C
     upward = [left_up,right_up]
     cross = [cross_left,cross_right]
@@ -17,14 +18,18 @@ function _etter_child_frames(C,boundary,left_up,right_up,rhs;
         F = svd(_complement_matrix(virtual,mode))
         Q,Vt = F.U,F.Vt
         B = _child_product(rhs,cross[sibling],5-mode)
-        frames[index] = (operator=_complement_operators(Q,boundary,upward[sibling]),
+        complement = isnothing(operator) ? _complement_operators(Q,boundary,upward[sibling]) :
+            _env_down(operator,node,mode,Q,boundary,upward[sibling];orthonormal)
+        frames[index] = (operator=complement,
                          rhs=Q'*_complement_matrix(B,mode),
                          transfer=F.S.*Vt)
         # The virtual sibling basis is orthonormal. Keep S in the virtual
         # parent, not in its cached upward operator or cross contraction.
         if index == 1 && active[2]
             virtual = _child_product(virtual,conj(Vt),mode)
-            upward[index] = [conj(Vt)*U*transpose(Vt) for U in upward[index]]
+            # A unitary rotation keeps an exact identity environment exact.
+            square = size(Vt,1) == size(Vt,2)
+            upward[index] = [square && isone(U) ? U : conj(Vt)*U*transpose(Vt) for U in upward[index]]
             cross[index] = conj(Vt)*cross[index]
         end
     end
@@ -55,8 +60,9 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
     down = [Matrix{ComplexF64}[] for _ in 1:n]
     rhsdown = Vector{Matrix{ComplexF64}}(undef,n)
     overlap = Vector{Matrix{ComplexF64}}(undef,n)
-    down[tree.root] = [ones(ComplexF64,1,1) for _ in A.terms]
+    down[tree.root] = _root_boundary(A)
     rhsdown[tree.root] = ones(ComplexF64,1,1)
+    orthonormal = _assume_orthonormal(A)
     slots = Any[get(workspace.buffers,node,nothing) for node in 1:n]
     allocations,reuses,solves,matvecs,iterations,spawned = (zeros(Int,n) for _ in 1:6)
     residuals = zeros(n)
@@ -81,11 +87,11 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
         buffers = buffers!(node,initial)
         if leaf
             rhs = b.leaves[node]*transpose(rhsdown[node])
-            action = _leaf_rhs_workspace(A,modes[node],down[node],initial;buffers)
+            action = _leaf_action(A,node,modes[node],down[node],initial;buffers)
         else
             left,right = tree.children[node]
             rhs = _parent_product(_project_children(b.cores[node],cross[left],cross[right]),rhsdown[node])
-            action = _core_rhs_workspace(A,down[node],up[left],up[right],initial;buffers)
+            action = _core_action(A,node,down[node],up[left],up[right],initial;buffers)
         end
         alg = KrylovKit.GMRES(;tol,krylovdim=min(krylovdim,length(initial)),maxiter=krylov_maxiter)
         result,report = KrylovKit.linsolve(action,rhs,initial,alg)
@@ -112,14 +118,14 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
         Q = Matrix(qr(M).Q)[:,1:rank]
         if leaf
             leaves[node] = Q
-            up[node] = _leaf_operators(A,modes[node],Q)
+            up[node] = _env_leaf(A,node,modes[node],Q;orthonormal)
             cross[node] = Q'*b.leaves[node]
             overlap[node] = Q'*x.leaves[node]
         else
             C = cores[node]
             cores[node] = reshape(Matrix(transpose(Q)),rank,size(C,2),size(C,3))
             left,right = tree.children[node]
-            up[node] = _subtree_operators(cores[node],up[left],up[right])
+            up[node] = _env_up(A,node,_basis_matrix(cores[node]),cores[node],up[left],up[right];orthonormal)
             cross[node] = Q'*_basis_matrix(_project_children(b.cores[node],cross[left],cross[right]))
             overlap[node] = Q'*_basis_matrix(_project_children(x.cores[node],overlap[left],overlap[right]))
         end
@@ -133,7 +139,7 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
             active = (left!=time_leaf,right!=time_leaf)
             rhs = _parent_product(b.cores[node],rhsdown[node])
             frames = _etter_child_frames(entry,down[node],up[left],up[right],rhs;
-                cross_left=cross[left],cross_right=cross[right],active)
+                cross_left=cross[left],cross_right=cross[right],active,operator=A,node)
             # Publish inputs before spawning; descendants never write parent slots.
             for (child,frame) in zip((left,right),frames)
                 if child == time_leaf

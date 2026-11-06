@@ -31,12 +31,12 @@ function _tamen_residual_sweep!(z,A,x,b)
     cross = Vector{Matrix{ComplexF64}}(undef,length(tree.children))
     function update_up!(node)
         if _isleaf(tree,node)
-            up[node] = _leaf_operators(A,modes[node],z.leaves[node],x.leaves[node])
+            up[node] = _env_leaf(A,node,modes[node],z.leaves[node],x.leaves[node])
             cross[node] = z.leaves[node]'*b.leaves[node]
         else
             left,right = tree.children[node]
             Q = _basis_matrix(z.cores[node])
-            up[node] = _mixed_subtree_operators(Q,x.cores[node],up[left],up[right])
+            up[node] = _env_up(A,node,Q,x.cores[node],up[left],up[right])
             cross[node] = Q'*_basis_matrix(_project_children(b.cores[node],cross[left],cross[right]))
         end
     end
@@ -45,21 +45,18 @@ function _tamen_residual_sweep!(z,A,x,b)
     end
     down = [Matrix{ComplexF64}[] for _ in tree.children]
     rhsdown = Vector{Matrix{ComplexF64}}(undef,length(tree.children))
-    down[tree.root] = [ones(ComplexF64,1,1) for _ in A.terms]
+    down[tree.root] = _root_boundary(A)
     rhsdown[tree.root] = ones(ComplexF64,1,1)
     local_updates = 0
     function project!(node)
         if _isleaf(tree,node)
             rhs = b.leaves[node]*transpose(rhsdown[node])
-            for (k,term) in enumerate(A.terms)
-                iszero(term.coefficient) && continue
-                rhs .-= term.coefficient .* (_local_action(term,modes[node],x.leaves[node])*transpose(down[node][k]))
-            end
+            _leaf_subtract!(rhs,A,node,modes[node],down[node],x.leaves[node])
             z.leaves[node] = rhs
         else
             left,right = tree.children[node]
             rhs = _parent_product(_project_children(b.cores[node],cross[left],cross[right]),rhsdown[node])
-            for term in _group_core_terms(A,down[node],up[left],up[right])
+            for term in _core_terms(A,node,down[node],up[left],up[right])
                 B,L,R = term.factors
                 rhs .-= term.coefficient .* _parent_product(_project_children(x.cores[node],L,R),B)
             end
@@ -75,7 +72,7 @@ function _tamen_residual_sweep!(z,A,x,b)
             Q = _tamen_down!(z,node,child,mode)
             # Rectangular complement: z's orthonormal frame against fixed x.
             source = permutedims(x.cores[node],mode == 2 ? (2,1,3) : (3,1,2))
-            down[child] = _mixed_subtree_operators(Q,source,down[node],up[sibling])
+            down[child] = _env_down(A,node,mode,Q,down[node],up[sibling];source)
             B = _parent_product(_child_product(b.cores[node],cross[sibling],5-mode),rhsdown[node])
             rhsdown[child] = Q'*_complement_matrix(B,mode)
             visit!(child)

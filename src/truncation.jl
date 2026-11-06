@@ -91,7 +91,7 @@ function _retained_space(M, protected, budget, maxrank)
 end
 
 """
-    truncate!(state; atol=1e-10, maxrank=typemax(Int), conserved=nothing,
+    truncate!(state; atol=1e-10, rtol=0, maxrank=typemax(Int), conserved=nothing,
               weighting=:weighted, fixed_leaves=Int[])
 
 Root-to-leaf SVD compression, protecting all subtree directions of an optional
@@ -100,7 +100,9 @@ TTN linear functional. Its subtree spaces must already be contained in state
 `conserved` may also be a vector of TTNs, protecting the union of their subtree
 directions rather than a sum of their values (which could cancel).
 
-The absolute error budget is shared over edges. The default `weighting=:weighted`
+The absolute error budget is `max(atol, rtol*norm(state))`; the norm is read
+from the root after the internal orthogonalization, so `rtol` adds no QR pass.
+The budget is shared over edges. The default `weighting=:weighted`
 propagates complementary amplitudes by thin QR and uses their full-state
 weights in each SVD. `:local` uses the original root norm as a conservative
 amplification bound for local core errors. Both return `discarded_bound` as a sum
@@ -111,9 +113,11 @@ Invalid options or incompatible protected spaces leave the input unchanged.
 `fixed_leaves` lists leaf node IDs whose full current basis is retained, exempt
 from `maxrank`. This supports an uncompressed time basis in space-time solves.
 """
-function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved=nothing,
+function truncate!(state::TTNTensor; atol=1e-10, rtol=0.0, maxrank=typemax(Int), conserved=nothing,
                    weighting=:weighted, fixed_leaves=Int[])
     _compression_options(atol, maxrank)
+    rtol isa Real && isfinite(rtol) && rtol >= 0 && isfinite(Float64(rtol)) ||
+        throw(ArgumentError("rtol must be finite and nonnegative"))
     _check_truncation_weighting(weighting)
     all(n -> n isa Integer && n in state.tree.leaf_order, fixed_leaves) ||
         throw(ArgumentError("fixed_leaves must contain leaf node IDs"))
@@ -139,7 +143,13 @@ function truncate!(state::TTNTensor; atol=1e-10, maxrank=typemax(Int), conserved
                 throw(ArgumentError("maxrank cannot hold the conserved directions"))
         end
     end
-    info = _truncate_canonical!(x;atol,maxrank,weighting,overlaps,fixed)
+    budget = Float64(atol)
+    if Float64(rtol) > 0
+        amplitude = _isleaf(tree, tree.root) ? x.leaves[tree.root] : x.cores[tree.root]
+        budget = max(budget, Float64(rtol)*norm(amplitude))
+        isfinite(budget) || throw(ArgumentError("rtol*norm(state) overflows Float64"))
+    end
+    info = _truncate_canonical!(x;atol=budget,maxrank,weighting,overlaps,fixed)
     merge!(state.leaves, x.leaves)
     merge!(state.cores, x.cores)
     return info
