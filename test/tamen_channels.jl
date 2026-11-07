@@ -218,3 +218,99 @@ end
         @test z.time_error.absolute < 1e-12
     end
 end
+
+@testset "Grouped parallel channel core actions" begin
+    rng = MersenneTwister(31)
+    for (p,l,r) in ((12,9,10),(3,20,11))   # slice and permuted left-factor paths
+        mats(n) = [randn(rng,ComplexF64,n,n) for _ in 1:4]
+        Bs,Ls,Rs = mats(p),mats(l),mats(r)
+        Ip,Il,Ir = (Matrix{ComplexF64}(I,n,n) for n in (p,l,r))
+        terms = TTNSolver._CoreOperatorTerm[]
+        for k in 1:11
+            push!(terms,TTNSolver._CoreOperatorTerm(randn(rng,ComplexF64),
+                (k%3==0 ? Ip : Bs[1+k%4], k%2==0 ? Il : Ls[1+k%4], k%5==0 ? Ir : Rs[1+k%4])))
+        end
+        initial = randn(rng,ComplexF64,p,l,r)
+        x = randn(rng,ComplexF64,p,l,r)
+        plain = TTNSolver._core_terms_workspace(terms,initial)(x)
+        reference = zeros(ComplexF64,p,l,r)
+        for t in terms
+            B,L,R = t.factors
+            reference .+= t.coefficient .* TTNSolver._parent_product(TTNSolver._project_children(x,L,R),B)
+        end
+        @test plain ≈ reference rtol=1e-12
+        buffers = TTNSolver._new_tamen_buffers(initial)
+        for chunks in (2,4,11,20)
+            serial = TTNSolver._core_terms_workspace(terms,initial;buffers,chunks)(x)
+            threaded = TTNSolver._core_terms_workspace(terms,initial;buffers,chunks,threaded=true)(x)
+            @test serial == threaded
+            @test serial ≈ plain rtol=1e-12
+        end
+        # Group scratch is created once per slot and reused.
+        pool = buffers[7]
+        @test length(pool) == length(terms)-1
+        ids = objectid.(first.(pool))
+        TTNSolver._core_terms_workspace(terms,initial;buffers,chunks=4)(x)
+        @test objectid.(first.(pool)) == ids
+    end
+
+    # Force grouping in whole solves: threaded and serial sweeps stay identical.
+    op,x = tt_acceptance_model(seed=12)
+    saved = (TTNSolver._CORE_CHUNK_MIN_SIZE[],TTNSolver._CORE_CHUNK_MIN_TERMS[])
+    try
+        TTNSolver._CORE_CHUNK_MIN_SIZE[] = 1; TTNSolver._CORE_CHUNK_MIN_TERMS[] = 2
+        for als_sweep in (:serial,:etter)
+            kw = (;time_points=8,rtol=1e-9,maxrank=9,maxsweeps=20,kickrank=2,als_sweep,certify=false)
+            ys,is = tamen_step(x,op,0.4;kw...,threaded=false)
+            yt,it = tamen_step(x,op,0.4;kw...,threaded=true)
+            @test dense(ys) == dense(yt)
+            @test is.matvecs == it.matvecs
+            TTNSolver._CORE_CHUNK_MIN_SIZE[] = typemax(Int)
+            yu,_ = tamen_step(x,op,0.4;kw...,threaded=true)
+            TTNSolver._CORE_CHUNK_MIN_SIZE[] = 1
+            @test ttn_distance(yu,ys) <= 1e-8*norm(ys)
+            @test norm(vec(dense(ys))-tt_exact(op,x,0.4)) < 1e-6*norm(tt_exact(op,x,0.4))
+        end
+    finally
+        TTNSolver._CORE_CHUNK_MIN_SIZE[],TTNSolver._CORE_CHUNK_MIN_TERMS[] = saved
+    end
+end
+
+@testset "Low-rank child factors in core actions" begin
+    rng = MersenneTwister(77)
+    lowrank_matrix(n,k) = randn(rng,ComplexF64,n,k)*randn(rng,ComplexF64,k,n)
+    for (p,l,r) in ((20,40,36),(6,48,40))
+        Ip,Il,Ir = (Matrix{ComplexF64}(I,n,n) for n in (p,l,r))
+        B = randn(rng,ComplexF64,p,p)
+        terms = [TTNSolver._CoreOperatorTerm(randn(rng,ComplexF64),f) for f in (
+            (Ip,lowrank_matrix(l,4),randn(rng,ComplexF64,r,r)),   # low left, full right
+            (B,lowrank_matrix(l,5),Ir),                            # low left with boundary
+            (Ip,randn(rng,ComplexF64,l,l),lowrank_matrix(r,3)),    # low right
+            (B,lowrank_matrix(l,6),lowrank_matrix(r,7)),           # both low
+            (B,randn(rng,ComplexF64,l,l),randn(rng,ComplexF64,r,r)))] # plain
+        @test TTNSolver._lowrank_plan(terms[1],isone.(terms[1].factors),p,l,r) !== nothing
+        @test TTNSolver._lowrank_plan(terms[5],isone.(terms[5].factors),p,l,r) === nothing
+        initial = randn(rng,ComplexF64,p,l,r); x = randn(rng,ComplexF64,p,l,r)
+        plain = TTNSolver._core_terms_workspace(terms,initial)(x)
+        for chunks in (1,2), threaded in (false,true)
+            low = TTNSolver._core_terms_workspace(terms,initial;chunks,threaded,lowrank=true)
+            @test low(x) ≈ plain rtol=1e-11
+            @test low(x) == low(x)   # pooled buffers do not leak state between calls
+        end
+    end
+    # Whole solves agree with and without the low-rank path.
+    op,x = tt_acceptance_model(seed=21)
+    minsize = TTNSolver._CORE_LOWRANK_MIN_SIZE[]
+    try
+        TTNSolver._CORE_LOWRANK_MIN_SIZE[] = 0
+        kw = (;time_points=8,rtol=1e-9,maxrank=9,maxsweeps=20,kickrank=2,certify=false)
+        TTNSolver._CORE_LOWRANK[] = false
+        y0,_ = tamen_step(x,op,0.4;kw...)
+        TTNSolver._CORE_LOWRANK[] = true
+        y1,_ = tamen_step(x,op,0.4;kw...)
+        @test ttn_distance(y0,y1) <= 1e-9*norm(y0)
+    finally
+        TTNSolver._CORE_LOWRANK[] = true
+        TTNSolver._CORE_LOWRANK_MIN_SIZE[] = minsize
+    end
+end

@@ -105,9 +105,10 @@ function _new_tamen_buffers(initial)
         buffers = (similar(initial),similar(initial))
     else
         p,l,r = size(initial)
+        # Slot seven holds per-group scratch for chunked local actions.
         buffers = (Array{ComplexF64}(undef,l,p,r),Array{ComplexF64}(undef,l,p,r),
                    Array{ComplexF64}(undef,r,p,l),Array{ComplexF64}(undef,r,p,l),
-                   similar(initial),similar(initial))
+                   similar(initial),similar(initial),Any[])
     end
     return buffers
 end

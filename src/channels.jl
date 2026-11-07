@@ -272,8 +272,25 @@ _leaf_action(A::_ChannelOperator,node,mode,boundary,initial;buffers=nothing) =
     _channel_leaf_workspace(A,node,boundary,initial;buffers)
 _core_terms(A::SumOfProducts,node,boundary,left,right) = _group_core_terms(A,boundary,left,right)
 _core_terms(A::_ChannelOperator,node,boundary,left,right) = _channel_core_terms(A,node,boundary,left,right)
-_core_action(A,node,boundary,left,right,initial;buffers=nothing) =
+_core_action(A::SumOfProducts,node,boundary,left,right,initial;buffers=nothing,threaded=false) =
     _core_terms_workspace(_core_terms(A,node,boundary,left,right),initial;buffers)
+
+# Large channel cores split their terms into a fixed number of groups (decided
+# by shape and term count only), solved concurrently when `threaded`. Groups
+# add cost for small cores, so they stay single.
+# Internal tuning knobs (Refs so tests can force grouping on small problems).
+const _CORE_CHUNKS = Ref(4)
+const _CORE_CHUNK_MIN_SIZE = Ref(4096)
+const _CORE_CHUNK_MIN_TERMS = Ref(4)
+const _CORE_LOWRANK = Ref(true)
+# Factor SVDs only pay off for large cores (measured on Holstein HEOM).
+const _CORE_LOWRANK_MIN_SIZE = Ref(131072)
+function _core_action(A::_ChannelOperator,node,boundary,left,right,initial;buffers=nothing,threaded=false)
+    terms = _core_terms(A,node,boundary,left,right)
+    chunks = length(initial) >= _CORE_CHUNK_MIN_SIZE[] && length(terms) >= _CORE_CHUNK_MIN_TERMS[] ? _CORE_CHUNKS[] : 1
+    lowrank = _CORE_LOWRANK[] && length(initial) >= _CORE_LOWRANK_MIN_SIZE[]
+    return _core_terms_workspace(terms,initial;buffers,chunks,threaded,lowrank)
+end
 
 function _leaf_subtract!(rhs,A::SumOfProducts,node,mode,boundary,x)
     for (k,term) in enumerate(A.terms)

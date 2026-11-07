@@ -392,6 +392,17 @@ operator application is spent on checking it. A chained warm start whose
 initial state is the stored endpoint (identical arrays) skips the distance
 check, and other inputs still get the exact check. Child-mode contractions
 avoid tensor permutations except for mode 2 with a small parent dimension.
+With channel environments, cores with at least 4096 entries and 4 local terms
+split their terms round-robin into 4 groups with private scratch and partial
+sums, run as tasks when `threaded=true`. Grouping depends only on shape and
+term count, so threaded and serial solves give bitwise identical results.
+For cores with at least 131072 entries, child factors of numerical rank
+k <= n/3 (singular values above 1e-13σ₁) are applied as `P*(Qᴴ*x)` when that
+saves at least 30% of the multiply-adds: the mode is compressed, the other
+factors act on the smaller tensor, and P restores it. HEOM system channels
+`V_j` have rank equal to the number of sites, which this exploits.
+`residual_rank` (default `kickrank`) sets the auxiliary residual rank used for
+the `certify=false` estimate independently of the enrichment size.
 
 Tests compare every edge operator `Σ D⊗U` and every local action against
 the SoP path. The test operators include three-body, scalar and zero

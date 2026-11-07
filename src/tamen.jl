@@ -83,7 +83,7 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         else
             left,right = tree.children[node]
             rhs = _parent_product(_project_children(b.cores[node],cross[left],cross[right]),rhsdown[node])
-            action = _core_action(A,node,down[node],up[left],up[right],initial;buffers)
+            action = _core_action(A,node,down[node],up[left],up[right],initial;buffers,threaded)
         end
         alg = KrylovKit.GMRES(;tol,krylovdim=min(krylovdim,length(initial)),maxiter=krylov_maxiter)
         result, report = KrylovKit.linsolve(action,rhs,initial,alg)
@@ -278,7 +278,7 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
                     residual_backend=:sop,
                     warm_start=nothing,store_warm_start::Bool=false,als_sweep=:serial,
                     truncation_rtol=0.0,certify::Bool=true,local_tol_factor=0.01,
-                    local_operator=:channels)
+                    local_operator=:channels,residual_rank=nothing)
     _check_operator(generator,initial)
     _check_local_operator(local_operator)
     _check_bug_options(atol,maxrank,krylov_tol,krylovdim,krylov_maxiter)
@@ -299,7 +299,9 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     isnothing(local_tol_factor) || (local_tol_factor isa Real && isfinite(local_tol_factor) &&
         0 < local_tol_factor <= 1) ||
         throw(ArgumentError("local_tol_factor must be nothing or a finite number in (0,1]"))
-    for (name,value) in ((:maxsweeps,maxsweeps),(:kickrank,kickrank),(:residual_maxrank,residual_maxrank),
+    # The auxiliary residual may be richer than the enrichment it supplies.
+    residual_rank = isnothing(residual_rank) ? kickrank : residual_rank
+    for (name,value) in ((:maxsweeps,maxsweeps),(:kickrank,kickrank),(:residual_rank,residual_rank),(:residual_maxrank,residual_maxrank),
                          (:residual_sweeps,residual_sweeps),(:residual_check_every,residual_check_every))
         value isa Integer && value >= 1 || throw(ArgumentError("$name must be a positive integer"))
     end
@@ -381,7 +383,7 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         residual_estimate = Inf
         if residual_method == :local
             started = time_ns()
-            auxiliary,rd = _tamen_local_residual(local_A,x,b,auxiliary;rank=kickrank,sweeps=residual_sweeps)
+            auxiliary,rd = _tamen_local_residual(local_A,x,b,auxiliary;rank=residual_rank,sweeps=residual_sweeps)
             residual_estimate = rd.estimate
             residual_updates += rd.local_updates
             residual_local_seconds += (time_ns()-started)/1e9
@@ -418,8 +420,11 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
             residual_estimate <= target
         (converged || sweep == maxsweeps) && break
         started = time_ns()
-        truncate!(residual;atol=0.0,maxrank=kickrank)
-        auxiliary = residual
+        enrichment = copy(residual)
+        truncate!(enrichment;atol=0.0,maxrank=kickrank)
+        # Keep the richer auxiliary for the next estimate; enrich with kickrank only.
+        auxiliary = residual_rank > kickrank ? residual : enrichment
+        residual = enrichment
         x = enrich_basis(x,residual)
         _identity_time!(x,time_leaf)
         enrichment_seconds += (time_ns()-started)/1e9

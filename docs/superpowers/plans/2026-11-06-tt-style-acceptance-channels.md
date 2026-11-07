@@ -112,3 +112,21 @@ Tests: TTNSolver 2845, TTNDynamics 595, benchmark verify 16.
 
 The tree study (centered-system HEOM trees, TTNDynamics) is recorded in
 `TTNDynamics/docs/holstein_tree_center.md`.
+
+## Follow-up: intra-node parallelism (2026-11-07)
+
+- [x] 15. Grouped channel core actions: terms split round-robin into 4 groups
+  (cores >= 4096 entries, >= 4 terms), private scratch in slot 7 of the node
+  buffers, partial sums added in fixed order, tasks when threaded. Tree-level
+  Etter parallelism alone was capped near 1.36x by one dominant node. Holstein
+  4.5→5 fs interval: 0.77 s → 0.54 s at 4 threads (0.90 s serial). Results are
+  identical across thread counts. Tests: TTNSolver 2886, TTNDynamics 635.
+- System-size and long-time comparisons are in
+  `TTNDynamics/docs/holstein_system_size.md`.
+- [x] 16. Low-rank child factors (cores >= 131072 entries, k <= n/3,
+  >= 30% flop saving): 10-site 15 fs runs 17–18% faster; little effect at 20 sites.
+- [x] 17. `residual_rank` option: better estimates and accuracy, but higher
+  ranks and cost. The TTN rank is set by the requested accuracy.
+- Long-time result: TT catches up (10 sites ~5 fs, 20 sites ~14 fs) because
+  TTN junction nodes with three large bonds cost r^4. Tests: TTNSolver 2913,
+  TTNDynamics 643.

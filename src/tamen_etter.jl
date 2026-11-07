@@ -92,7 +92,7 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
         else
             left,right = tree.children[node]
             rhs = _parent_product(_project_children(b.cores[node],cross[left],cross[right]),rhsdown[node])
-            action = _core_action(A,node,down[node],up[left],up[right],initial;buffers)
+            action = _core_action(A,node,down[node],up[left],up[right],initial;buffers,threaded)
         end
         alg = KrylovKit.GMRES(;tol,krylovdim=min(krylovdim,length(initial)),maxiter=krylov_maxiter)
         result,report = KrylovKit.linsolve(action,rhs,initial,alg)

@@ -195,3 +195,20 @@ end
         end
     end
 end
+
+@testset "Auxiliary residual rank separate from kickrank" begin
+    op,x = tt_acceptance_model(seed=15)
+    exact = tt_exact(op,x,0.4)
+    kw = (;time_points=8,rtol=1e-8,maxrank=9,maxsweeps=30,kickrank=2,certify=false)
+    y0,d0 = tamen_step(x,op,0.4;kw...)
+    y1,d1 = tamen_step(x,op,0.4;kw...,residual_rank=6)
+    @test d0.converged && d1.converged
+    @test tt_error(y1,exact) < 1e-6
+    # The richer estimate is never smaller than the kickrank projection's.
+    @test d1.relative_residual_estimate <= 1e-8
+    @test tamen_step(x,op,0.4;kw...,residual_rank=2)[2].matvecs == d0.matvecs
+    @test_throws ArgumentError tamen_step(x,op,0.4;kw...,residual_rank=0)
+    # Warm starts keep the richer auxiliary TTN.
+    _,w = tamen_step(x,op,0.2;kw...,residual_rank=6,store_warm_start=true)
+    @test maximum(tree_ranks(w.warm_start.residual)) <= 6
+end
