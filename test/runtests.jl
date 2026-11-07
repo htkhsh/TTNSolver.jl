@@ -13,6 +13,7 @@ using TTNSolver
     include("weighted_truncation.jl")
     include("orth_columns_allocations.jl")
     include("enrichment.jl")
+    include("parallel_tree_passes.jl")
     include("bug.jl")
     include("augmented_threads.jl")
     include("parallel_bug.jl")

@@ -114,7 +114,7 @@ Invalid options or incompatible protected spaces leave the input unchanged.
 from `maxrank`. This supports an uncompressed time basis in space-time solves.
 """
 function truncate!(state::TTNTensor; atol=1e-10, rtol=0.0, maxrank=typemax(Int), conserved=nothing,
-                   weighting=:weighted, fixed_leaves=Int[])
+                   weighting=:weighted, fixed_leaves=Int[], threaded=false)
     _compression_options(atol, maxrank)
     rtol isa Real && isfinite(rtol) && rtol >= 0 && isfinite(Float64(rtol)) ||
         throw(ArgumentError("rtol must be finite and nonnegative"))
@@ -125,7 +125,7 @@ function truncate!(state::TTNTensor; atol=1e-10, rtol=0.0, maxrank=typemax(Int),
     cs = conserved isa AbstractVector ? [_canonical_conserved(state,c) for c in conserved] :
          isnothing(conserved) ? TTNTensor[] : [_canonical_conserved(state,conserved)]
     all(c->c isa TTNTensor,cs) || throw(ArgumentError("conserved entries must be TTNs"))
-    x = orthogonalize!(copy(state))
+    x = orthogonalize!(copy(state); threaded)
     tree = x.tree
     all_overlaps = [_subtree_overlaps(x,c) for c in cs]
     overlaps = isempty(cs) ? nothing : length(cs)==1 ? first(all_overlaps) :
@@ -149,7 +149,7 @@ function truncate!(state::TTNTensor; atol=1e-10, rtol=0.0, maxrank=typemax(Int),
         budget = max(budget, Float64(rtol)*norm(amplitude))
         isfinite(budget) || throw(ArgumentError("rtol*norm(state) overflows Float64"))
     end
-    info = _truncate_canonical!(x;atol=budget,maxrank,weighting,overlaps,fixed)
+    info = _truncate_canonical!(x;atol=budget,maxrank,weighting,overlaps,fixed,threaded)
     merge!(state.leaves, x.leaves)
     merge!(state.cores, x.cores)
     return info
@@ -159,7 +159,8 @@ end
 # protection checks and transactional copying remain in the public wrapper.
 # Canonical sum assembly can call this directly without a redundant copy/QR.
 function _truncate_canonical!(x;atol,maxrank,weighting=:weighted,
-                              overlaps=nothing,fixed=Set{Int}(),canonicalize::Bool=true,timings=nothing)
+                              overlaps=nothing,fixed=Set{Int}(),canonicalize::Bool=true,timings=nothing,
+                              threaded=false)
     tree = x.tree
     weighted = weighting == :weighted
     scale = weighted ? 1.0 : max(1.0, norm(x))
@@ -167,13 +168,16 @@ function _truncate_canonical!(x;atol,maxrank,weighting=:weighted,
     weighted && (factors[tree.root] = ones(ComplexF64,1,1))
     edges = length(tree.children)-1
     budget = Float64(atol) / max(1, edges) / scale
-    discarded_bound = 0.0
+    leaves,cores = _node_tensors(x)
+    dropped_at = zeros(length(tree.children))
     # Descendants have not yet changed when their parent is processed; their
     # old orthonormal subtree bases therefore make each W an orthogonal cut.
-    for node in reverse(tree.postorder)
-        _isleaf(tree, node) && continue
+    # A node writes only itself and its children, so sibling subtrees can run
+    # concurrently. Shared timing counters keep timed calls serial.
+    _each_subtree(tree; threaded=threaded && isnothing(timings), order=:pre) do node
+        _isleaf(tree, node) && return
         for (child, mode) in zip(tree.children[node], (2, 3))
-            C = x.cores[node]
+            C = cores[node]
             started=_residual_tick(timings)
             if weighted
                 # Complementary bases are orthonormal before cuts in other
@@ -190,22 +194,31 @@ function _truncate_canonical!(x;atol,maxrank,weighting=:weighted,
             P = isnothing(overlaps) ? zeros(ComplexF64, size(M, 1), 0) : overlaps[child]
             W, dropped = child in fixed ? (Matrix{ComplexF64}(I,size(M,1),size(M,1)),0.0) :
                 _retained_space(M, P, budget, maxrank)
-            discarded_bound += scale * dropped
+            dropped_at[child] = dropped
             _residual_record!(timings,Val(:svd_seconds),started)
             started=_residual_tick(timings)
             # Coefficients transform by W', hence the transposed outside
             # factor transforms by conj(W), not W or W'.
             weighted && (factors[child] = R * conj.(W))
-            x.cores[node] = _child_product(C, W', mode)
+            cores[node] = _child_product(C, W', mode)
             if _isleaf(tree, child)
-                x.leaves[child] = x.leaves[child] * W
+                leaves[child] = leaves[child] * W
             else
-                x.cores[child] = _parent_product(x.cores[child], transpose(W))
+                cores[child] = _parent_product(cores[child], transpose(W))
             end
             _residual_record!(timings,Val(:basis_update_seconds),started)
         end
     end
-    canonicalize && orthogonalize!(x)
+    _store_node_tensors!(x, leaves, cores)
+    # Sum the bounds in the serial root-to-leaf order.
+    discarded_bound = 0.0
+    for node in reverse(tree.postorder)
+        _isleaf(tree, node) && continue
+        for child in tree.children[node]
+            discarded_bound += scale * dropped_at[child]
+        end
+    end
+    canonicalize && orthogonalize!(x; threaded)
     return (; ranks=tree_ranks(x), discarded_bound,
             tolerance_met=discarded_bound <= Float64(atol))
 end

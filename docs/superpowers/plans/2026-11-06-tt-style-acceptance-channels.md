@@ -143,3 +143,10 @@ The tree study (centered-system HEOM trees, TTNDynamics) is recorded in
   10 sites -14% at 4 threads, -24% at 8; 20 sites -21% and -30%. With 4 GC
   threads at 8 Julia threads: -31% and -36%. Tests: TTNSolver 2939,
   TTNDynamics 643.
+- 20 sites to 20 fs, one run at a time on the same 8 cores: TTN 455 s vs TT
+  764 s (TTN faster at every time; 83 vs 130 s per fs at 18–20 fs).
+- [x] 19. Subtree-parallel orthogonalize!/enrich_basis/truncate! (`threaded`
+  keyword, bitwise identical results). 15 fs steps: -6 to -8% (20 sites,
+  4 and 8 threads); truncation+root phase -23 to -28%. The largest nodes are
+  at the top of the tree, which limits the gain. Tests: TTNSolver 3059,
+  TTNDynamics 643.

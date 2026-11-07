@@ -114,29 +114,107 @@ No normalization or tolerance-based truncation is performed. Locally
 overcomplete ranks shrink to the unfolding's row dimension. Rank-deficient
 and zero inputs are allowed. Returns `state`.
 """
-function orthogonalize!(state::TTNTensor)
+function orthogonalize!(state::TTNTensor; threaded=false)
     tree = state.tree
-    for node in tree.postorder
-        node == tree.root && continue
+    leaves,cores = _node_tensors(state)
+    factors = Vector{Matrix{ComplexF64}}(undef, length(tree.children))
+    position = _postorder_positions(tree)
+    # A node takes its children's R factors (in postorder, as a serial sweep
+    # applies them), then factors itself. Sibling subtrees are independent.
+    _each_subtree(tree; threaded) do node
+        if !_isleaf(tree, node)
+            for child in sort(collect(tree.children[node]); by=c->position[c])
+                mode = tree.children[node][1] == child ? 2 : 3
+                cores[node] = _child_product(cores[node], factors[child], mode)
+            end
+        end
+        node == tree.root && return
         basis = if _isleaf(tree, node)
-            state.leaves[node]
+            leaves[node]
         else
-            core = state.cores[node]
+            core = cores[node]
             Matrix(transpose(reshape(core, size(core, 1), :)))
         end
         factorization = qr(basis)
         rank = min(size(basis)...)
         q = Matrix(factorization.Q)[:, 1:rank]
-        r = Matrix(factorization.R)
+        factors[node] = Matrix(factorization.R)
         if _isleaf(tree, node)
-            state.leaves[node] = q
+            leaves[node] = q
         else
-            _, left_rank, right_rank = size(state.cores[node])
-            state.cores[node] = reshape(Matrix(transpose(q)), rank, left_rank, right_rank)
+            _, left_rank, right_rank = size(cores[node])
+            cores[node] = reshape(Matrix(transpose(q)), rank, left_rank, right_rank)
         end
-        parent = tree.parent[node]
-        mode = tree.children[parent][1] == node ? 2 : 3
-        state.cores[parent] = _child_product(state.cores[parent], r, mode)
+    end
+    _store_node_tensors!(state, leaves, cores)
+    return state
+end
+
+# Per-node tensors in vectors indexed by node, so tasks never write the
+# state's dictionaries concurrently; _store_node_tensors! writes them back.
+function _node_tensors(state::TTNTensor)
+    n = length(state.tree.children)
+    leaves = Vector{Matrix{ComplexF64}}(undef, n)
+    cores = Vector{Array{ComplexF64,3}}(undef, n)
+    for (node, leaf) in state.leaves
+        leaves[node] = leaf
+    end
+    for (node, core) in state.cores
+        cores[node] = core
+    end
+    return leaves, cores
+end
+function _store_node_tensors!(state::TTNTensor, leaves, cores)
+    for node in keys(state.leaves)
+        state.leaves[node] = leaves[node]
+    end
+    for node in keys(state.cores)
+        state.cores[node] = cores[node]
     end
     return state
+end
+
+function _postorder_positions(tree)
+    position = zeros(Int, length(tree.children))
+    for (i, node) in enumerate(tree.postorder)
+        position[node] = i
+    end
+    return position
+end
+
+function _subtree_sizes(tree)
+    sizes = ones(Int, length(tree.children))
+    for node in tree.postorder
+        _isleaf(tree, node) || (sizes[node] += sum(sizes[c] for c in tree.children[node]))
+    end
+    return sizes
+end
+
+# Tree pass for work where a node reads or writes only its own slot and its
+# children's: `order=:post` runs `f(node)` after both child subtrees,
+# `order=:pre` before them. With `threaded`, sibling subtrees run as tasks and
+# split the thread budget by size. Each node's work is the same in any order,
+# so results do not depend on the thread count.
+function _each_subtree(f, tree; threaded=false, order=:post)
+    sizes = _subtree_sizes(tree)
+    function visit(node, budget)
+        order == :pre && f(node)
+        if !_isleaf(tree, node)
+            left, right = tree.children[node]
+            if budget > 1
+                lb = clamp(round(Int, budget*sizes[left]/(sizes[left]+sizes[right])), 1, budget-1)
+                task = Threads.@spawn visit(left, lb)
+                right_error = try visit(right, budget-lb); nothing catch e; e end
+                fetch(task)
+                isnothing(right_error) || throw(right_error)
+            else
+                visit(left, 1)
+                visit(right, 1)
+            end
+        end
+        order == :post && f(node)
+        return nothing
+    end
+    visit(tree.root, threaded ? Threads.nthreads(:default) : 1)
+    return nothing
 end

@@ -353,10 +353,10 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
     residual_bound = compression_bound = Inf
     function prepare(x)
         for c in protected
-            x = enrich_basis(x,c)
+            x = enrich_basis(x,c;threaded)
         end
         # truncation_rtol=0 keeps every nonzero direction up to maxrank.
-        cut = truncate!(x;atol=0.0,rtol=truncation_rtol,maxrank,conserved=protected,fixed_leaves=[time_leaf])
+        cut = truncate!(x;atol=0.0,rtol=truncation_rtol,maxrank,conserved=protected,fixed_leaves=[time_leaf],threaded)
         _identity_time!(x,time_leaf)
         return x,cut
     end
@@ -421,11 +421,11 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         (converged || sweep == maxsweeps) && break
         started = time_ns()
         enrichment = copy(residual)
-        truncate!(enrichment;atol=0.0,maxrank=kickrank)
+        truncate!(enrichment;atol=0.0,maxrank=kickrank,threaded)
         # Keep the richer auxiliary for the next estimate; enrich with kickrank only.
         auxiliary = residual_rank > kickrank ? residual : enrichment
         residual = enrichment
-        x = enrich_basis(x,residual)
+        x = enrich_basis(x,residual;threaded)
         _identity_time!(x,time_leaf)
         enrichment_seconds += (time_ns()-started)/1e9
     end

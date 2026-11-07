@@ -414,6 +414,14 @@ history (`invariant_history`) is formed with one contraction per observable,
 with the spatial root bond left open, instead of copying the spatial TTN for
 every collocation point.
 
+`orthogonalize!`, `enrich_basis` and `truncate!` accept `threaded=true`
+(tAMEn passes its own flag). Sibling subtrees then run as tasks: the
+orthogonalization and enrichment passes go leaves-to-root, the truncation cuts
+go root-to-leaves, and every node writes only its own and its children's slots.
+A parent applies its children's R factors in the serial postorder, and the
+discarded bounds are summed in the serial order, so results are bitwise
+identical to the serial pass for every thread count.
+
 Tests compare every edge operator `Σ D⊗U` and every local action against
 the SoP path. The test operators include three-body, scalar and zero
 coefficient terms, on irregular trees. Solutions, time errors and invariant
