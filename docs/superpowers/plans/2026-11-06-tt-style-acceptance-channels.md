@@ -130,3 +130,16 @@ The tree study (centered-system HEOM trees, TTNDynamics) is recorded in
 - Long-time result: TT catches up (10 sites ~5 fs, 20 sites ~14 fs) because
   TTN junction nodes with three large bonds cost r^4. Tests: TTNSolver 2913,
   TTNDynamics 643.
+- Looser truncation (3e-5, 6.6e-5) rechecked to 20 fs against a new TT
+  reference (tol 1e-5): no net speedup (10 sites -8%, 20 sites +11%) and 20-40%
+  larger density errors at 20 fs. Default 1e-5 kept.
+- Thread scaling at 15 fs: more threads or BLAS threads barely helped
+  (<=1.15x from 4 to 16 cores). A serial profile showed environment
+  contractions (~30%) and truncation/enrichment (~26%) outweighing the local
+  solves (~20%). Blocked mode products in core actions were slower and
+  were dropped.
+- [x] 18. Parallel environment pairs (cores >= 131072 entries, up to 8 tasks,
+  identical results) and a one-contraction invariant history. 15 fs steps:
+  10 sites -14% at 4 threads, -24% at 8; 20 sites -21% and -30%. With 4 GC
+  threads at 8 Julia threads: -31% and -36%. Tests: TTNSolver 2939,
+  TTNDynamics 643.

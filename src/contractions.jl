@@ -19,15 +19,31 @@ end
 # entries may share storage and must remain read-only (as environments do).
 # No cache survives a changed basis/operator or is shared between workers.
 function _map_unique_pairs(f, left, right)
-    cache = Dict{Tuple{Matrix{ComplexF64},Matrix{ComplexF64}},Matrix{ComplexF64}}()
-    result = Vector{Matrix{ComplexF64}}(undef, length(left))
+    pairs, index = _unique_pairs(left, right)
+    values = [f(L, R) for (L, R) in pairs]
+    return Matrix{ComplexF64}[values[i] for i in index]
+end
+
+# Distinct (left, right) pairs in first-occurrence order, and the pair index
+# of every input position.
+function _unique_pairs(left, right)
+    ids = Dict{Tuple{Matrix{ComplexF64},Matrix{ComplexF64}},Int}()
+    pairs = Tuple{Matrix{ComplexF64},Matrix{ComplexF64}}[]
+    index = Vector{Int}(undef, length(left))
     for k in eachindex(left, right)
-        result[k] = get!(cache, (left[k], right[k])) do
-            f(left[k], right[k])
+        index[k] = get!(ids, (left[k], right[k])) do
+            push!(pairs, (left[k], right[k]))
+            length(pairs)
         end
     end
-    return result
+    return pairs, index
 end
+
+# Environment batches on large cores split their distinct pairs over tasks
+# when `threaded`. Every pair is computed by the same code from the same
+# inputs, so the result does not depend on the task count.
+const _ENV_PARALLEL_MIN_SIZE = Ref(131072)
+const _ENV_TASKS_MAX = Ref(8)
 
 function _leaf_operators(operator, mode, bra, ket=bra; orthonormal=false)
     cache = Dict{Union{Nothing,Matrix{ComplexF64}},Matrix{ComplexF64}}()
@@ -52,45 +68,60 @@ end
 
 # orthonormal=true asserts that bra is the isometric basis represented by core.
 # Mixed old/new frames and general public environments must leave it false.
-function _mixed_subtree_operators(bra, core, left, right; orthonormal=false)
+function _mixed_subtree_operators(bra, core, left, right; orthonormal=false, threaded=false)
     isempty(left) && return Matrix{ComplexF64}[]
     p,l,r = size(core)
     a,b = size(first(left),1),size(first(right),1)
     # The input core is fixed throughout this batch; reuse the intermediates
-    # for the distinct factor pairs at this node. Child modes are contracted
-    # in place of permutations: L per right-index slice, R on a (p*a,r) view.
-    # Only the small environment result returned from each call is retained.
-    left_out = Array{ComplexF64}(undef,p,a,r)
-    right_out = Array{ComplexF64}(undef,p,a,b)
-    right_mat = reshape(right_out,p*a,b)
+    # for the distinct factor pairs at this node (one set per task). Child
+    # modes are contracted in place of permutations: L per right-index slice,
+    # R on a (p*a,r) view. Only the small environment results are retained.
     slices = _slice_mode2(p,l)
     # Small parent dimensions: permute the fixed core once for all pairs.
     left_in = slices ? nothing : reshape(permutedims(core,(2,1,3)),l,p*r)
-    left_tmp = slices ? nothing : Array{ComplexF64}(undef,a,p,r)
-    return _map_unique_pairs(left, right) do L,R
-        if orthonormal && isone(L) && isone(R)
-            return Matrix{ComplexF64}(I,p,p)
-        end
-        source = core
-        if !isone(L)
-            if slices
-                Lt = transpose(L)
-                for k in 1:r
-                    mul!(view(left_out,:,:,k),view(core,:,:,k),Lt)
-                end
-            else
-                mul!(reshape(left_tmp,a,p*r),L,left_in)
-                permutedims!(left_out,left_tmp,(2,1,3))
+    scratch() = (Array{ComplexF64}(undef,p,a,r),Array{ComplexF64}(undef,p,a,b),
+                 slices ? nothing : Array{ComplexF64}(undef,a,p,r))
+    pairs,index = _unique_pairs(left,right)
+    values = Vector{Matrix{ComplexF64}}(undef,length(pairs))
+    tasks = threaded && p*l*r >= _ENV_PARALLEL_MIN_SIZE[] ?
+        clamp(min(Threads.nthreads(:default),_ENV_TASKS_MAX[]),1,length(pairs)) : 1
+    # Each task owns its scratch. `local` matters: assigning a variable that
+    # also exists in the enclosing function would share it between tasks.
+    @sync for t in 1:tasks
+        run = () -> begin
+            local work = scratch()
+            for u in t:tasks:length(pairs)
+                values[u] = _mixed_pair(bra,core,pairs[u]...,work,left_in,slices,orthonormal)
             end
-            source = left_out
         end
-        if !isone(R)
-            mul!(right_mat,reshape(source,p*a,r),transpose(R))
-            source = right_out
-        end
-        # bra' * basis(projected), with basis = transpose(reshape(projected,p,:)).
-        bra' * transpose(reshape(source,p,a*b))
+        tasks == 1 ? run() : Threads.@spawn run()
     end
+    return Matrix{ComplexF64}[values[i] for i in index]
+end
+
+function _mixed_pair(bra,core,L,R,(left_out,right_out,left_tmp),left_in,slices,orthonormal)
+    p,l,r = size(core)
+    a,b = size(left_out,2),size(right_out,3)
+    orthonormal && isone(L) && isone(R) && return Matrix{ComplexF64}(I,p,p)
+    source = core
+    if !isone(L)
+        if slices
+            Lt = transpose(L)
+            for k in 1:r
+                mul!(view(left_out,:,:,k),view(core,:,:,k),Lt)
+            end
+        else
+            mul!(reshape(left_tmp,a,p*r),L,left_in)
+            permutedims!(left_out,left_tmp,(2,1,3))
+        end
+        source = left_out
+    end
+    if !isone(R)
+        mul!(reshape(right_out,p*a,b),reshape(source,p*a,r),transpose(R))
+        source = right_out
+    end
+    # bra' * basis(projected), with basis = transpose(reshape(projected,p,:)).
+    return bra' * transpose(reshape(source,p,a*b))
 end
 
 # The complement of child i has axes (parent boundary, sibling, child rank).
@@ -107,13 +138,13 @@ function _complement_operator(Q, boundary, sibling)
     return Q' * reshape(acted, b*s, :)
 end
 
-function _complement_operators(Q, boundary, sibling; orthonormal=false)
+function _complement_operators(Q, boundary, sibling; orthonormal=false, threaded=false)
     isempty(boundary) && return Matrix{ComplexF64}[]
     b,s = size(first(boundary),1),size(first(sibling),1)
     # Express the complement as a subtree with Q as both bra and ket. This
     # uses the same buffered contraction for all distinct boundary pairs.
     core = permutedims(reshape(Q,b,s,:),(3,1,2))
-    return _mixed_subtree_operators(Q,core,boundary,sibling; orthonormal)
+    return _mixed_subtree_operators(Q,core,boundary,sibling; orthonormal, threaded)
 end
 
 function _upward_operators(operator, state; orthonormal=false)

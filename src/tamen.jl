@@ -113,7 +113,7 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
         for (child,sibling,mode) in ((left,right,2),(right,left,3))
             child == time_leaf && continue
             Q = _tamen_down!(x,node,child,mode)
-            down[child] = _env_down(A,node,mode,Q,down[node],up[sibling];orthonormal)
+            down[child] = _env_down(A,node,mode,Q,down[node],up[sibling];orthonormal,threaded)
             B = _parent_product(_child_product(b.cores[node],cross[sibling],5-mode),rhsdown[node])
             rhsdown[child] = Q'*_complement_matrix(B,mode)
             visit!(child)
@@ -123,7 +123,7 @@ function _tamen_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,workspace,th
                 cross[child] = x.leaves[child]'*b.leaves[child]
             else
                 a,c = tree.children[child]
-                up[child] = _env_up(A,child,_basis_matrix(x.cores[child]),x.cores[child],up[a],up[c];orthonormal)
+                up[child] = _env_up(A,child,_basis_matrix(x.cores[child]),x.cores[child],up[a],up[c];orthonormal,threaded)
                 cross[child] = _basis_matrix(x.cores[child])'*
                     _basis_matrix(_project_children(b.cores[child],cross[a],cross[c]))
             end
@@ -430,7 +430,7 @@ function _tamen_step(initial::TTNTensor,generator::SumOfProducts,duration;
         enrichment_seconds += (time_ns()-started)/1e9
     end
     solution = SpaceTimeTTN(x,copy(initial),grid.nodes,time_leaf,grid.scheme)
-    invariant_history = [dot(c,time_slice(solution,j)) for c in cs, j in eachindex(grid.nodes)]
+    invariant_history = _invariant_history(solution,cs)
     invariant_values = length(cs)==1 ? vec(invariant_history) :
         isempty(cs) ? ComplexF64[] : invariant_history
     error_started = time_ns()

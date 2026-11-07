@@ -404,6 +404,16 @@ factors act on the smaller tensor, and P restores it. HEOM system channels
 `residual_rank` (default `kickrank`) sets the auxiliary residual rank used for
 the `certify=false` estimate independently of the enrichment size.
 
+At long times the environment contractions (`_env_up`/`_env_down`, one per
+distinct pair of child factors) cost as much as the local GMRES solves, which
+converge in a few warm-started iterations. With `threaded=true`, cores with at
+least 131072 entries split their distinct pairs over up to 8 tasks, each with
+its own scratch. Each pair is computed by the same code from the same inputs,
+so results remain identical for every thread count. The conserved-observable
+history (`invariant_history`) is formed with one contraction per observable,
+with the spatial root bond left open, instead of copying the spatial TTN for
+every collocation point.
+
 Tests compare every edge operator `Σ D⊗U` and every local action against
 the SoP path. The test operators include three-body, scalar and zero
 coefficient terms, on irregular trees. Solutions, time errors and invariant

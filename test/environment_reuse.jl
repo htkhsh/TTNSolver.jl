@@ -70,3 +70,30 @@ end
     result[2] .= 0
     @test result[1] == saved
 end
+
+@testset "Environment pairs computed in parallel" begin
+    rng = MersenneTwister(864)
+    saved = TTNSolver._ENV_PARALLEL_MIN_SIZE[]
+    try
+        TTNSolver._ENV_PARALLEL_MIN_SIZE[] = 1
+        for (p,l,r) in ((6,5,4),(2,9,7))   # slice and permuted left-factor paths
+            core = randn(rng,ComplexF64,p,l,r)
+            bra = randn(rng,ComplexF64,l*r,p)
+            Ls = [randn(rng,ComplexF64,l,l) for _ in 1:3]
+            Rs = [randn(rng,ComplexF64,r,r) for _ in 1:3]
+            Il,Ir = Matrix{ComplexF64}(I,l,l),Matrix{ComplexF64}(I,r,r)
+            left = [Ls[1],Ls[2],copy(Ls[1]),Il,Ls[3],Il]
+            right = [Rs[1],Rs[2],copy(Rs[1]),Rs[3],Ir,Ir]
+            serial = TTNSolver._mixed_subtree_operators(bra,core,left,right)
+            threaded = TTNSolver._mixed_subtree_operators(bra,core,left,right;threaded=true)
+            @test serial == threaded
+            @test threaded[1] === threaded[3]   # duplicate pairs share one result
+            basis = TTNSolver._basis_matrix(core)
+            for k in eachindex(left)
+                @test threaded[k] ≈ bra'*kron(right[k],left[k])*basis rtol=1e-12
+            end
+        end
+    finally
+        TTNSolver._ENV_PARALLEL_MIN_SIZE[] = saved
+    end
+end

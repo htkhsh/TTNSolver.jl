@@ -314,3 +314,22 @@ end
         TTNSolver._CORE_LOWRANK_MIN_SIZE[] = minsize
     end
 end
+
+@testset "Parallel environment pairs in whole solves" begin
+    saved = TTNSolver._ENV_PARALLEL_MIN_SIZE[]
+    try
+        TTNSolver._ENV_PARALLEL_MIN_SIZE[] = 1
+        # Threaded and serial sweeps stay identical, run after run.
+        for seed in (12,16), als_sweep in (:serial,:etter)
+            op,x = tt_acceptance_model(;seed)
+            kw = (;time_points=8,rtol=1e-9,maxrank=9,maxsweeps=20,kickrank=2,als_sweep,certify=false)
+            ys,is = tamen_step(x,op,0.4;kw...,threaded=false)
+            yt,it = tamen_step(x,op,0.4;kw...,threaded=true)
+            yt2,_ = tamen_step(x,op,0.4;kw...,threaded=true)
+            @test dense(ys) == dense(yt) == dense(yt2)
+            @test is.matvecs == it.matvecs
+        end
+    finally
+        TTNSolver._ENV_PARALLEL_MIN_SIZE[] = saved
+    end
+end

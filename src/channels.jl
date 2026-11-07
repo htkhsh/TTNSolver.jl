@@ -193,9 +193,9 @@ function _grouped_bilinear(f,ntargets,entries,X,Y)
     return out
 end
 
-function _channel_up(P,node,bra,core,left,right;orthonormal=false)
+function _channel_up(P,node,bra,core,left,right;orthonormal=false,threaded=false)
     return _grouped_bilinear(P.channels[node],P.transitions[node],left,right) do Ls,Rs
-        _mixed_subtree_operators(bra,core,Ls,Rs;orthonormal)
+        _mixed_subtree_operators(bra,core,Ls,Rs;orthonormal,threaded)
     end
 end
 
@@ -204,12 +204,12 @@ function _complement_source(Q,boundary,sibling)
     return permutedims(reshape(Q,b,s,:),(3,1,2))
 end
 
-function _channel_down(P,parent,mode,Q,source,boundary,sibling;orthonormal=false)
+function _channel_down(P,parent,mode,Q,source,boundary,sibling;orthonormal=false,threaded=false)
     child = P.tree.children[parent][mode-1]
     entries = mode == 2 ? [(b,a,c,x) for (a,b,c,x) in P.transitions[parent]] :
                           [(c,a,b,x) for (a,b,c,x) in P.transitions[parent]]
     return _grouped_bilinear(P.channels[child],entries,boundary,sibling) do Bs,Ss
-        _mixed_subtree_operators(Q,source,Bs,Ss;orthonormal)
+        _mixed_subtree_operators(Q,source,Bs,Ss;orthonormal,threaded)
     end
 end
 
@@ -253,18 +253,18 @@ _env_leaf(A::SumOfProducts,node,mode,bra,ket=bra;orthonormal=false) =
     _leaf_operators(A,mode,bra,ket;orthonormal)
 _env_leaf(A::_ChannelOperator,node,mode,bra,ket=bra;orthonormal=false) =
     _channel_leaf_envs(A,node,bra,ket;orthonormal)
-_env_up(::SumOfProducts,node,bra,core,left,right;orthonormal=false) =
-    _mixed_subtree_operators(bra,core,left,right;orthonormal)
-_env_up(A::_ChannelOperator,node,bra,core,left,right;orthonormal=false) =
-    _channel_up(A,node,bra,core,left,right;orthonormal)
-function _env_down(::SumOfProducts,parent,mode,Q,boundary,sibling;source=nothing,orthonormal=false)
-    isnothing(source) && return _complement_operators(Q,boundary,sibling;orthonormal)
-    return _mixed_subtree_operators(Q,source,boundary,sibling;orthonormal)
+_env_up(::SumOfProducts,node,bra,core,left,right;orthonormal=false,threaded=false) =
+    _mixed_subtree_operators(bra,core,left,right;orthonormal,threaded)
+_env_up(A::_ChannelOperator,node,bra,core,left,right;orthonormal=false,threaded=false) =
+    _channel_up(A,node,bra,core,left,right;orthonormal,threaded)
+function _env_down(::SumOfProducts,parent,mode,Q,boundary,sibling;source=nothing,orthonormal=false,threaded=false)
+    isnothing(source) && return _complement_operators(Q,boundary,sibling;orthonormal,threaded)
+    return _mixed_subtree_operators(Q,source,boundary,sibling;orthonormal,threaded)
 end
-function _env_down(A::_ChannelOperator,parent,mode,Q,boundary,sibling;source=nothing,orthonormal=false)
+function _env_down(A::_ChannelOperator,parent,mode,Q,boundary,sibling;source=nothing,orthonormal=false,threaded=false)
     isempty(boundary) && return Matrix{ComplexF64}[]
     frame = isnothing(source) ? _complement_source(Q,boundary,sibling) : source
-    return _channel_down(A,parent,mode,Q,frame,boundary,sibling;orthonormal)
+    return _channel_down(A,parent,mode,Q,frame,boundary,sibling;orthonormal,threaded)
 end
 _leaf_action(A::SumOfProducts,node,mode,boundary,initial;buffers=nothing) =
     _leaf_rhs_workspace(A,mode,boundary,initial;buffers)

@@ -128,6 +128,36 @@ function time_slice(solution::SpaceTimeTTN, index::Integer)
     return _spatial_coefficients(solution,weights)
 end
 
+# dot(c, time_slice(solution, j)) for every observable c and sample j from one
+# contraction per c: the spatial basis keeps its root bond open, and each
+# sample weights that bond with its root/time row (as in time_slice).
+function _invariant_history(solution::SpaceTimeTTN,cs)
+    nodes = length(solution.nodes)
+    history = zeros(ComplexF64,length(cs),nodes)
+    isempty(cs) && return history
+    st,original = solution.state,solution.initial.tree
+    C = st.cores[st.tree.root]
+    offset = solution.time_scheme == :cheb ? 1 : 0
+    samples = [index-offset for index in 2:nodes]
+    weights = reshape(C,size(C,2),size(C,3)) * transpose(st.leaves[solution.time_leaf][samples,:])
+    for (i,c) in enumerate(cs)
+        envs = Dict{Int,Matrix{ComplexF64}}()
+        for node in original.postorder
+            if _isleaf(original,node)
+                envs[node] = c.leaves[node]' * st.leaves[node]
+            else
+                left,right = original.children[node]
+                projected = _child_product(_child_product(st.cores[node],envs[left],2),envs[right],3)
+                ccore = c.cores[node]
+                envs[node] = conj.(reshape(ccore,size(ccore,1),:)) * transpose(reshape(projected,size(projected,1),:))
+            end
+        end
+        history[i,1] = dot(c,solution.initial)
+        nodes > 1 && (history[i,2:end] = vec(envs[original.root]*weights))
+    end
+    return history
+end
+
 function _spatial_coefficients(solution,weights)
     st,original = solution.state,solution.initial.tree
     leaves = Dict(node=>copy(st.leaves[node]) for node in original.leaf_order)

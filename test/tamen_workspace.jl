@@ -12,6 +12,8 @@
             time_scheme=scheme,time_points=7,maxrank=8,rtol=1e-9,threaded=false)
         @test size(d.invariant_history) == (2,length(d.solution.nodes))
         @test d.invariant_history ≈ repeat([dot(c,x) for c in cs],1,length(d.solution.nodes)) atol=1e-10
+        # One open-bond contraction gives the same values as explicit slices.
+        @test d.invariant_history ≈ [dot(c,time_slice(d.solution,j)) for c in cs, j in eachindex(d.solution.nodes)] rtol=1e-12
         yp,p = tamen_step(x,op,0.2;workspace=work,conserved_observables=cs,
             time_scheme=scheme,time_points=7,maxrank=8,rtol=1e-9,threaded=true)
         @test ttn_distance(y,yp) < 1e-11

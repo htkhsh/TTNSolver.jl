@@ -6,7 +6,7 @@
 function _etter_child_frames(C,boundary,left_up,right_up,rhs;
                              cross_left=Matrix{ComplexF64}(I,size(C,2),size(C,2)),
                              cross_right=Matrix{ComplexF64}(I,size(C,3),size(C,3)),
-                             active=(true,true),operator=nothing,node=0)
+                             active=(true,true),operator=nothing,node=0,threaded=false)
     orthonormal = !isnothing(operator) && _assume_orthonormal(operator)
     virtual = C
     upward = [left_up,right_up]
@@ -18,8 +18,8 @@ function _etter_child_frames(C,boundary,left_up,right_up,rhs;
         F = svd(_complement_matrix(virtual,mode))
         Q,Vt = F.U,F.Vt
         B = _child_product(rhs,cross[sibling],5-mode)
-        complement = isnothing(operator) ? _complement_operators(Q,boundary,upward[sibling]) :
-            _env_down(operator,node,mode,Q,boundary,upward[sibling];orthonormal)
+        complement = isnothing(operator) ? _complement_operators(Q,boundary,upward[sibling];threaded) :
+            _env_down(operator,node,mode,Q,boundary,upward[sibling];orthonormal,threaded)
         frames[index] = (operator=complement,
                          rhs=Q'*_complement_matrix(B,mode),
                          transfer=F.S.*Vt)
@@ -128,7 +128,7 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
             C = cores[node]
             cores[node] = reshape(Matrix(transpose(Q)),rank,size(C,2),size(C,3))
             left,right = tree.children[node]
-            up[node] = _env_up(A,node,_basis_matrix(cores[node]),cores[node],up[left],up[right];orthonormal)
+            up[node] = _env_up(A,node,_basis_matrix(cores[node]),cores[node],up[left],up[right];orthonormal,threaded)
             cross[node] = Q'*_basis_matrix(_project_children(b.cores[node],cross[left],cross[right]))
             overlap[node] = Q'*_basis_matrix(_project_children(x.cores[node],overlap[left],overlap[right]))
         end
@@ -143,7 +143,7 @@ function _tamen_etter_sweep!(x,A,b,time_leaf;tol,krylovdim,krylov_maxiter,worksp
             active = (left!=time_leaf,right!=time_leaf)
             rhs = _parent_product(b.cores[node],rhsdown[node])
             frames = _etter_child_frames(entry,down[node],up[left],up[right],rhs;
-                cross_left=cross[left],cross_right=cross[right],active,operator=A,node)
+                cross_left=cross[left],cross_right=cross[right],active,operator=A,node,threaded)
             # Publish inputs before spawning; descendants never write parent slots.
             for (child,frame) in zip((left,right),frames)
                 if child == time_leaf

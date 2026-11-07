@@ -146,7 +146,7 @@ function _tamen_upward(A,x,b;threaded=false)
             visit(right,1)
         end
         up[node] = _env_up(A,node,_basis_matrix(x.cores[node]),x.cores[node],up[left],up[right];
-            orthonormal=orthonormal && node != tree.root)
+            orthonormal=orthonormal && node != tree.root,threaded)
         cross[node] = _basis_matrix(x.cores[node])'*
             _basis_matrix(_project_children(b.cores[node],cross[left],cross[right]))
         return
